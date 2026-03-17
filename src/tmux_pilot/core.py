@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import shutil
 from dataclasses import dataclass, field
@@ -46,9 +47,9 @@ def _run(
         return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="timeout")
 
 
-def _tmux(*args: str, check: bool = True) -> str:
+def _tmux(*args: str, check: bool = True, timeout: int = 5) -> str:
     """Run a tmux command and return stdout stripped."""
-    result = _run(["tmux", *args], check=check)
+    result = _run(["tmux", *args], check=check, timeout=timeout)
     return result.stdout.strip() if result.stdout else ""
 
 
@@ -92,79 +93,77 @@ class SessionInfo:
     def repo(self) -> str:
         return self.metadata.get("repo", "")
 
+    def to_dict(self) -> dict:
+        """Serialize to a plain dict for JSON output."""
+        return {
+            "name": self.name,
+            "process": self.process,
+            "working_dir": self.working_dir,
+            "metadata": dict(self.metadata),
+        }
 
-def list_sessions() -> list[SessionInfo]:
-    """List all tmux sessions with metadata."""
+
+_META_FMT = "\t".join(f"#{{@{k}}}" for k in METADATA_KEYS)
+_SESSION_FMT = f"#{{session_name}}\t#{{pane_current_command}}\t#{{pane_current_path}}\t{_META_FMT}"
+
+
+def _parse_session_line(line: str) -> SessionInfo | None:
+    """Parse a single tab-separated tmux format line into a SessionInfo."""
+    parts = line.split("\t")
+    if len(parts) < 3:
+        return None
+
+    name, pane_cmd, pane_path = parts[0], parts[1], parts[2]
+    meta = {}
+    for i, key in enumerate(METADATA_KEYS):
+        val = parts[3 + i] if (3 + i) < len(parts) else ""
+        if val:
+            meta[key] = val
+
+    return SessionInfo(
+        name=name,
+        process=_detect_process(pane_cmd),
+        working_dir=pane_path,
+        metadata=meta,
+    )
+
+
+def list_sessions(
+    *,
+    status: str | None = None,
+    repo: str | None = None,
+    process: str | None = None,
+) -> list[SessionInfo]:
+    """List all tmux sessions with metadata, with optional filters."""
     if not tmux_running():
         return []
 
-    # Fetch everything in one tmux call including @-prefixed metadata
-    fmt = (
-        "#{session_name}\t#{pane_current_command}\t#{pane_current_path}\t"
-        "#{@repo}\t#{@task}\t#{@desc}\t#{@status}\t#{@origin}\t#{@branch}\t#{@needs}"
-    )
-    raw = _tmux("list-sessions", "-F", fmt, check=False)
+    raw = _tmux("list-sessions", "-F", _SESSION_FMT, check=False)
     if not raw:
         return []
 
     sessions: list[SessionInfo] = []
     seen: set[str] = set()
-    meta_keys = ("repo", "task", "desc", "status", "origin", "branch", "needs")
     for line in raw.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 3:
+        info = _parse_session_line(line)
+        if info is None or info.name in seen:
             continue
-        name, pane_cmd, pane_path = parts[0], parts[1], parts[2]
-        if name in seen:
+        seen.add(info.name)
+
+        if status and info.status.lower() != status.lower():
             continue
-        seen.add(name)
+        if process and info.process.lower() != process.lower():
+            continue
+        if repo and repo.lower() not in info.repo.lower() and repo.lower() not in info.name.lower():
+            continue
 
-        meta = {}
-        for i, key in enumerate(meta_keys):
-            val = parts[3 + i] if (3 + i) < len(parts) else ""
-            if val:
-                meta[key] = val
-
-        sessions.append(
-            SessionInfo(
-                name=name,
-                process=_detect_process(pane_cmd),
-                working_dir=pane_path,
-                metadata=meta,
-            )
-        )
+        sessions.append(info)
     return sessions
 
 
-def _get_all_metadata(session_name: str) -> dict[str, str]:
-    """Read all @-prefixed user options from a session in one call."""
-    result = _run(
-        ["tmux", "show-options", "-t", session_name],
-        check=False,
-    )
-    if result.returncode != 0 or not result.stdout:
-        return {}
-    meta: dict[str, str] = {}
-    for line in result.stdout.strip().splitlines():
-        if not line.startswith("@"):
-            continue
-        parts = line.split(" ", 1)
-        if len(parts) == 2:
-            key = parts[0][1:]  # strip @
-            val = parts[1].strip().strip('"')
-            meta[key] = val
-    return meta
-
-
 def get_metadata(session_name: str, key: str) -> str:
-    """Get a single @metadata value from a session."""
-    result = _run(
-        ["tmux", "show-options", "-t", session_name, "-v", f"@{key}"],
-        check=False,
-    )
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+    """Get a single @metadata value from a session using display-message."""
+    return _tmux("display-message", "-t", session_name, "-p", f"#{{@{key}}}", check=False)
 
 
 def set_metadata(session_name: str, key: str, value: str) -> None:
@@ -191,9 +190,9 @@ def new_session(
         set_metadata(name, "repo", str(Path(directory).expanduser().resolve()))
 
 
-def peek_session(name: str, lines: int = 50) -> str:
+def peek_session(name: str, lines: int = 50, timeout: int = 3) -> str:
     """Capture last N lines of scrollback from a session without attaching."""
-    return _tmux("capture-pane", "-t", name, "-p", "-S", f"-{lines}", check=True)
+    return _tmux("capture-pane", "-t", name, "-p", "-S", f"-{lines}", check=True, timeout=timeout)
 
 
 def send_keys(name: str, text: str) -> None:
@@ -257,19 +256,29 @@ def _is_inside_tmux() -> bool:
 
 
 def get_session_status(name: str) -> dict:
-    """Get detailed status for a session."""
+    """Get detailed status for a session using batched format strings."""
     if not session_exists(name):
         raise RuntimeError(f"Session '{name}' not found")
 
-    fmt = "#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}"
-    raw = _tmux("list-panes", "-t", name, "-F", fmt)
-    parts = raw.splitlines()[0].split("\t", 2) if raw else ["", "", ""]
+    # Fetch pane info + all metadata in one call
+    pane_fmt = (
+        "#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t"
+        + _META_FMT
+    )
+    raw = _tmux("list-panes", "-t", name, "-F", pane_fmt)
+    parts = raw.splitlines()[0].split("\t") if raw else []
+
     pane_cmd = parts[0] if len(parts) > 0 else ""
     pane_path = parts[1] if len(parts) > 1 else ""
     pane_pid = parts[2] if len(parts) > 2 else ""
 
-    meta = _get_all_metadata(name)
-    scrollback = peek_session(name, lines=20)
+    meta = {}
+    for i, key in enumerate(METADATA_KEYS):
+        val = parts[3 + i] if (3 + i) < len(parts) else ""
+        if val:
+            meta[key] = val
+
+    scrollback = peek_session(name, lines=5)
 
     return {
         "name": name,

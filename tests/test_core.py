@@ -6,6 +6,7 @@ Sessions are cleaned up in teardown.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 import pytest
@@ -124,6 +125,55 @@ class TestStatus:
             core.get_session_status("_tp_nonexistent_xyz")
 
 
+class TestFiltering:
+    """Test list_sessions filtering."""
+
+    def test_filter_by_status(self):
+        core.new_session(TEST_SESSION, desc="filter test")
+        core.set_metadata(TEST_SESSION, "status", "active")
+        sessions = core.list_sessions(status="active")
+        names = [s.name for s in sessions]
+        assert TEST_SESSION in names
+
+        sessions = core.list_sessions(status="done")
+        names = [s.name for s in sessions]
+        assert TEST_SESSION not in names
+
+    def test_filter_by_process(self):
+        core.new_session(TEST_SESSION)
+        sessions = core.list_sessions()
+        test_session = next(s for s in sessions if s.name == TEST_SESSION)
+        # Filter by whatever process the test session is running
+        sessions = core.list_sessions(process=test_session.process)
+        names = [s.name for s in sessions]
+        assert TEST_SESSION in names
+
+    def test_filter_by_repo(self):
+        core.new_session(TEST_SESSION, directory="/tmp")
+        sessions = core.list_sessions(repo="tmp")
+        names = [s.name for s in sessions]
+        # Should match either repo metadata or session name
+        assert TEST_SESSION in names or any("tmp" in n for n in names)
+
+
+class TestSessionInfoDict:
+    """Test SessionInfo.to_dict serialization."""
+
+    def test_to_dict(self):
+        s = core.SessionInfo(
+            name="test",
+            process="claude-code",
+            working_dir="/tmp",
+            metadata={"status": "active", "desc": "hello"},
+        )
+        d = s.to_dict()
+        assert d["name"] == "test"
+        assert d["process"] == "claude-code"
+        assert d["metadata"]["status"] == "active"
+        # Should be JSON-serializable
+        json.dumps(d)
+
+
 class TestDisplay:
     """Test display formatting."""
 
@@ -161,9 +211,34 @@ class TestCLI:
             cli_main(["--version"])
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "0.1.0" in captured.out
+        assert "0.2.0" in captured.out
 
     def test_ls(self, capsys):
         cli_main(["ls"])
         captured = capsys.readouterr()
         assert isinstance(captured.out, str)
+
+    def test_ls_json(self, capsys):
+        core.new_session(TEST_SESSION, desc="json test")
+        cli_main(["ls", "--json"])
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert isinstance(data, list)
+        names = [s["name"] for s in data]
+        assert TEST_SESSION in names
+
+    def test_ls_filter(self, capsys):
+        core.new_session(TEST_SESSION, desc="filter test")
+        core.set_metadata(TEST_SESSION, "status", "active")
+        cli_main(["ls", "--status", "active"])
+        captured = capsys.readouterr()
+        assert TEST_SESSION in captured.out
+
+    def test_ls_json_with_filter(self, capsys):
+        core.new_session(TEST_SESSION, desc="combo test")
+        core.set_metadata(TEST_SESSION, "status", "active")
+        cli_main(["ls", "--json", "--status", "active"])
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        names = [s["name"] for s in data]
+        assert TEST_SESSION in names

@@ -1,61 +1,140 @@
 # tmux-pilot
 
-A thin, opinionated CLI for managing tmux sessions that run AI coding agents (Claude Code, Codex, etc). Both humans and AI orchestrators use it.
+A thin, opinionated CLI for managing tmux sessions that run AI coding agents (Claude Code, Codex, etc).
+
+**Why?** When you run multiple AI coding agents in parallel — each in its own tmux session — you need a way to list them, peek at their output, send follow-up instructions, and track metadata like status and branch. `tmux-pilot` wraps the fiddly tmux commands into a single `tp` command designed for both humans and AI orchestrators.
 
 ## Install
 
 ```bash
+# pip
 pip install tmux-pilot
+
+# pipx (isolated install)
+pipx install tmux-pilot
+
+# uv
+uv tool install tmux-pilot
 ```
 
-Or with uv:
+**Requirements:** Python 3.10+, tmux. Optional: fzf (for `tp jump` picker).
+
+## Quick Start
 
 ```bash
-uv pip install tmux-pilot
-```
+# Spin up a session for a feature branch
+tp new auth-flow -c ~/repos/myapp -d "Implement OAuth2 login"
 
-## Usage
+# Launch Claude Code inside it
+tp send auth-flow "claude-code"
 
-```bash
-tp ls                          # list sessions with metadata
-tp new NAME [-c DIR] [-d DESC] # create session with metadata
-tp peek NAME [-n LINES]        # show last N lines of scrollback
-tp send NAME "message"         # inject text + Enter into a session
-tp jump [NAME]                 # attach/switch to session (fzf picker if no name)
-tp status NAME                 # detailed status: metadata, process, scrollback
-tp kill NAME                   # kill session
-tp set NAME key value          # set @metadata
-tp get NAME key                # get @metadata
-```
-
-## Examples
-
-### Create a session for Claude Code
-
-```bash
-tp new my-feature -c ~/repos/my-project -d "Implement auth flow"
-tp send my-feature "claude-code --print 'implement oauth2 login'"
-```
-
-### Monitor from an AI orchestrator
-
-```bash
-# Check what's running
+# Check on all your sessions
 tp ls
 
 # Peek at output without attaching
-tp peek my-feature -n 100
+tp peek auth-flow -n 30
 
-# Send follow-up instructions
-tp send my-feature "now add tests for the auth module"
+# Send a follow-up instruction
+tp send auth-flow "now add tests for the auth module"
+
+# Get detailed status
+tp status auth-flow
+
+# Done — tear it down
+tp kill auth-flow
 ```
 
-### Metadata
+## Commands
+
+### `tp ls` — List sessions
 
 ```bash
-tp set my-feature status "waiting-for-review"
-tp set my-feature branch "feat/auth"
-tp get my-feature status
+tp ls                          # table view
+tp ls --json                   # JSON output (for AI orchestrators)
+tp ls --status active          # filter by @status metadata
+tp ls --repo myapp             # filter by repo (substring match)
+tp ls --process claude-code    # filter by detected process
+tp ls --json --status active   # combine filters with JSON
+```
+
+### `tp new` — Create a session
+
+```bash
+tp new NAME                    # bare session
+tp new NAME -c ~/repos/myapp   # set working directory + @repo
+tp new NAME -d "description"   # set @desc metadata
+tp new NAME -c DIR -d DESC     # both
+```
+
+### `tp peek` — View scrollback without attaching
+
+```bash
+tp peek NAME                   # last 50 lines (default)
+tp peek NAME -n 100            # last 100 lines
+```
+
+### `tp send` — Inject text into a session
+
+```bash
+tp send NAME "any command"     # sends text + Enter
+tp send NAME "claude-code --print 'fix the auth bug'"
+```
+
+### `tp jump` — Attach or switch to a session
+
+```bash
+tp jump NAME                   # attach (or switch if inside tmux)
+tp jump                        # fzf picker (requires fzf)
+```
+
+### `tp status` — Detailed session info
+
+Shows process, PID, working directory, all metadata, and the last 5 lines of scrollback.
+
+```bash
+tp status NAME
+```
+
+### `tp set` / `tp get` — Session metadata
+
+Metadata is stored as tmux user options (`@`-prefixed). Built-in keys: `repo`, `task`, `desc`, `status`, `origin`, `branch`, `needs`.
+
+```bash
+tp set NAME status "waiting-for-review"
+tp set NAME branch "feat/auth"
+tp get NAME status
+```
+
+## For AI Orchestrators
+
+`tmux-pilot` is designed to be called by AI coding agents and orchestration scripts, not just humans. The `--json` flag on `tp ls` outputs machine-readable JSON:
+
+```bash
+$ tp ls --json
+[
+  {
+    "name": "auth-flow",
+    "process": "claude-code",
+    "working_dir": "/home/user/repos/myapp",
+    "metadata": {
+      "desc": "Implement OAuth2 login",
+      "status": "active",
+      "repo": "/home/user/repos/myapp"
+    }
+  }
+]
+```
+
+A typical orchestrator loop:
+
+```bash
+# Poll for sessions needing attention
+tp ls --json --status needs-review | jq '.[].name' | while read name; do
+  tp peek "$name" -n 20
+  # ... decide what to do ...
+  tp send "$name" "next instruction"
+  tp set "$name" status active
+done
 ```
 
 ## Key Features
@@ -63,14 +142,10 @@ tp get my-feature status
 - **Zero dependencies** — stdlib only (subprocess calls to tmux)
 - **Process detection** — distinguishes claude-code vs codex vs bare shell
 - **Metadata** — tmux user options (@status, @desc, @repo, @branch, etc.)
-- **Peek without attaching** — critical for AI orchestrators that monitor sessions
+- **Peek without attaching** — critical for orchestrators monitoring sessions
+- **JSON output** — `tp ls --json` for machine-readable session data
+- **Filtering** — `tp ls --status/--repo/--process` to narrow results
 - **fzf integration** — optional fuzzy picker for `tp jump`
-
-## Requirements
-
-- Python 3.10+
-- tmux
-- Optional: fzf (for `tp jump` picker)
 
 ## License
 
