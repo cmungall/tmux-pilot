@@ -1,0 +1,167 @@
+"""argparse CLI entry point for tmux-pilot."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from . import core, display
+
+
+def cmd_ls(args: argparse.Namespace) -> None:
+    sessions = core.list_sessions()
+    print(display.format_session_table(sessions))
+
+
+def cmd_new(args: argparse.Namespace) -> None:
+    if core.session_exists(args.name):
+        print(f"Session '{args.name}' already exists.", file=sys.stderr)
+        sys.exit(1)
+    core.new_session(args.name, directory=args.directory, desc=args.desc)
+    print(f"Created session '{args.name}'")
+
+
+def cmd_peek(args: argparse.Namespace) -> None:
+    if not core.session_exists(args.name):
+        print(f"Session '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    output = core.peek_session(args.name, lines=args.lines)
+    print(output)
+
+
+def cmd_send(args: argparse.Namespace) -> None:
+    if not core.session_exists(args.name):
+        print(f"Session '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    core.send_keys(args.name, args.text)
+
+
+def cmd_jump(args: argparse.Namespace) -> None:
+    try:
+        core.jump_session(args.name)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    try:
+        info = core.get_session_status(args.name)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    print(display.format_status(info))
+
+
+def cmd_kill(args: argparse.Namespace) -> None:
+    if not core.session_exists(args.name):
+        print(f"Session '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    core.kill_session(args.name)
+    print(f"Killed session '{args.name}'")
+
+
+def cmd_set(args: argparse.Namespace) -> None:
+    if not core.session_exists(args.name):
+        print(f"Session '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    core.set_metadata(args.name, args.key, args.value)
+
+
+def cmd_get(args: argparse.Namespace) -> None:
+    if not core.session_exists(args.name):
+        print(f"Session '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    val = core.get_metadata(args.name, args.key)
+    if val:
+        print(val)
+    else:
+        sys.exit(1)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tp",
+        description="tmux-pilot: manage tmux sessions for AI coding agents",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {_get_version()}",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # ls
+    sub.add_parser("ls", help="List sessions with metadata")
+
+    # new
+    p_new = sub.add_parser("new", help="Create a new session")
+    p_new.add_argument("name", help="Session name")
+    p_new.add_argument("-c", "--directory", help="Working directory")
+    p_new.add_argument("-d", "--desc", help="Description")
+
+    # peek
+    p_peek = sub.add_parser("peek", help="Show last N lines of scrollback")
+    p_peek.add_argument("name", help="Session name")
+    p_peek.add_argument("-n", "--lines", type=int, default=50, help="Lines to capture (default: 50)")
+
+    # send
+    p_send = sub.add_parser("send", help="Send text + Enter to a session")
+    p_send.add_argument("name", help="Session name")
+    p_send.add_argument("text", help="Text to send")
+
+    # jump
+    p_jump = sub.add_parser("jump", help="Attach/switch to a session (fzf picker if no name)")
+    p_jump.add_argument("name", nargs="?", default=None, help="Session name")
+
+    # status
+    p_status = sub.add_parser("status", help="Detailed session status")
+    p_status.add_argument("name", help="Session name")
+
+    # kill
+    p_kill = sub.add_parser("kill", help="Kill a session")
+    p_kill.add_argument("name", help="Session name")
+
+    # set
+    p_set = sub.add_parser("set", help="Set @metadata on a session")
+    p_set.add_argument("name", help="Session name")
+    p_set.add_argument("key", help="Metadata key")
+    p_set.add_argument("value", help="Metadata value")
+
+    # get
+    p_get = sub.add_parser("get", help="Get @metadata from a session")
+    p_get.add_argument("name", help="Session name")
+    p_get.add_argument("key", help="Metadata key")
+
+    return parser
+
+
+def _get_version() -> str:
+    from . import __version__
+    return __version__
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
+
+    handlers = {
+        "ls": cmd_ls,
+        "new": cmd_new,
+        "peek": cmd_peek,
+        "send": cmd_send,
+        "jump": cmd_jump,
+        "status": cmd_status,
+        "kill": cmd_kill,
+        "set": cmd_set,
+        "get": cmd_get,
+    }
+    handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    main()
