@@ -211,14 +211,44 @@ def session_exists(name: str) -> bool:
     return result.returncode == 0
 
 
+def _attach_or_switch(target: str) -> None:
+    """Attach or switch to a session by exact name."""
+    if _is_inside_tmux():
+        _tmux("switch-client", "-t", target)
+    else:
+        result = _run(["tmux", "attach-session", "-t", target], check=False, capture=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to attach to session '{target}'")
+
+
+def _resolve_session(name: str) -> str:
+    """Resolve a name to an exact session, supporting substring matching.
+
+    - Exact match: return immediately.
+    - Single substring match: return that session.
+    - Multiple substring matches: raise with list of matches.
+    - No matches: raise.
+    """
+    sessions = list_sessions()
+    exact = [s for s in sessions if s.name == name]
+    if exact:
+        return exact[0].name
+
+    matches = [s for s in sessions if name.lower() in s.name.lower()]
+
+    if len(matches) == 1:
+        return matches[0].name
+    if len(matches) > 1:
+        names = ", ".join(s.name for s in matches)
+        raise RuntimeError(f"'{name}' matches multiple sessions: {names}")
+    raise RuntimeError(f"No session matching '{name}'")
+
+
 def jump_session(name: str | None = None) -> None:
-    """Attach or switch to a session. If no name, use fzf picker."""
+    """Attach or switch to a session. Supports substring matching and fzf picker."""
     if name:
-        # If inside tmux, switch; otherwise attach
-        if _is_inside_tmux():
-            _tmux("switch-client", "-t", name)
-        else:
-            subprocess.run(["tmux", "attach-session", "-t", name], check=True)
+        target = _resolve_session(name)
+        _attach_or_switch(target)
         return
 
     # fzf picker
@@ -246,7 +276,7 @@ def jump_session(name: str | None = None) -> None:
     if result.returncode != 0:
         return  # user cancelled
     chosen = result.stdout.strip().split()[0]
-    jump_session(chosen)
+    _attach_or_switch(chosen)
 
 
 def _is_inside_tmux() -> bool:

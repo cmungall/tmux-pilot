@@ -108,6 +108,34 @@ class TestPeekAndSend:
         assert "TMUX_PILOT_TEST_MARKER" in output
 
 
+class TestResolveSession:
+    """Test substring matching for jump."""
+
+    def test_exact_match(self):
+        core.new_session(TEST_SESSION)
+        assert core._resolve_session(TEST_SESSION) == TEST_SESSION
+
+    def test_substring_match(self):
+        core.new_session(TEST_SESSION)
+        # "_tp_test" is a substring of "_tp_test_session"
+        assert core._resolve_session("_tp_test") == TEST_SESSION
+
+    def test_no_match(self):
+        core.new_session(TEST_SESSION)
+        with pytest.raises(RuntimeError, match="No session matching"):
+            core._resolve_session("_xyzzy_nonexistent_99")
+
+    def test_multiple_matches(self):
+        core.new_session(TEST_SESSION)
+        other = TEST_SESSION + "_2"
+        try:
+            core.new_session(other)
+            with pytest.raises(RuntimeError, match="matches multiple"):
+                core._resolve_session("_tp_test")
+        finally:
+            _cleanup_session(other)
+
+
 class TestStatus:
     """Test detailed status."""
 
