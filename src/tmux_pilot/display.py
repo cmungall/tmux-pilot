@@ -4,23 +4,65 @@ from __future__ import annotations
 
 from .core import SessionInfo
 
+# All available columns: (long_name, mnemonic, accessor)
+ALL_COLUMNS: list[tuple[str, str, object]] = [
+    ("NAME", "N", lambda s: s.name),
+    ("STATUS", "S", lambda s: s.status or "-"),
+    ("PROCESS", "P", lambda s: s.process),
+    ("DESC", "D", lambda s: s.desc or "-"),
+    ("DIR", "W", lambda s: _shorten_path(s.working_dir)),
+    ("REPO", "R", lambda s: _shorten_path(s.metadata.get("repo", "")) or "-"),
+    ("TASK", "T", lambda s: s.metadata.get("task", "") or "-"),
+    ("BRANCH", "B", lambda s: s.metadata.get("branch", "") or "-"),
+]
 
-def format_session_table(sessions: list[SessionInfo]) -> str:
-    """Format sessions as an aligned table."""
+_COL_BY_MNEMONIC = {m: (name, acc) for name, m, acc in ALL_COLUMNS}
+_COL_BY_NAME = {name: (name, acc) for name, _, acc in ALL_COLUMNS}
+
+DEFAULT_COLS = "NSPDW"
+
+
+def parse_cols(spec: str | None) -> list[tuple[str, object]]:
+    """Parse a --cols spec into a list of (header, accessor) tuples.
+
+    Accepts either single-letter mnemonics (e.g. "NSP") or
+    comma-separated long names (e.g. "NAME,STATUS,PROCESS").
+    """
+    if not spec:
+        spec = DEFAULT_COLS
+
+    # Comma-separated long names
+    if "," in spec:
+        result = []
+        for token in spec.split(","):
+            token = token.strip().upper()
+            if token in _COL_BY_NAME:
+                result.append(_COL_BY_NAME[token])
+            else:
+                raise ValueError(f"Unknown column: {token}. Available: {', '.join(_COL_BY_NAME)}")
+        return result
+
+    # Single-letter mnemonics
+    spec = spec.upper()
+    result = []
+    for ch in spec:
+        if ch in _COL_BY_MNEMONIC:
+            result.append(_COL_BY_MNEMONIC[ch])
+        else:
+            valid = ", ".join(f"{m}={n}" for n, m, _ in ALL_COLUMNS)
+            raise ValueError(f"Unknown column mnemonic: {ch}. Available: {valid}")
+    return result
+
+
+def format_session_table(sessions: list[SessionInfo], cols: str | None = None) -> str:
+    """Format sessions as an aligned table with configurable columns."""
     if not sessions:
         return "No tmux sessions found."
 
-    # Column definitions: (header, accessor)
-    columns = [
-        ("NAME", lambda s: s.name),
-        ("STATUS", lambda s: s.status or "-"),
-        ("PROCESS", lambda s: s.process),
-        ("DESC", lambda s: s.desc or "-"),
-        ("DIR", lambda s: _shorten_path(s.working_dir)),
-    ]
-
-    headers = [c[0] for c in columns]
-    rows = [[accessor(s) for _, accessor in columns] for s in sessions]
+    columns = parse_cols(cols)
+    headers = [name for name, _ in columns]
+    accessors = [acc for _, acc in columns]
+    rows = [[acc(s) for acc in accessors] for s in sessions]
 
     # Calculate column widths
     widths = [len(h) for h in headers]

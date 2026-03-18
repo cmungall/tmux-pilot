@@ -18,7 +18,7 @@ def cmd_ls(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps([s.to_dict() for s in sessions], indent=2))
     else:
-        print(display.format_session_table(sessions))
+        print(display.format_session_table(sessions, cols=args.cols))
 
 
 def cmd_new(args: argparse.Namespace) -> None:
@@ -143,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ls
     p_ls = sub.add_parser("ls", help="List sessions with metadata")
     p_ls.add_argument("--json", action="store_true", help="Output as JSON")
+    p_ls.add_argument("--cols", help="Columns to show: mnemonics (NSP) or names (NAME,STATUS,PROCESS)")
     p_ls.add_argument("--status", help="Filter by status (e.g. active, done)")
     p_ls.add_argument("--repo", help="Filter by repo name (substring match)")
     p_ls.add_argument("--process", help="Filter by process (e.g. claude-code, python)")

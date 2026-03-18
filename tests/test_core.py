@@ -13,7 +13,7 @@ import pytest
 
 from tmux_pilot import core
 from tmux_pilot.cli import main as cli_main
-from tmux_pilot.display import format_session_table
+from tmux_pilot.display import format_session_table, parse_cols
 
 
 TEST_SESSION = "_tp_test_session"
@@ -266,6 +266,44 @@ class TestDisplay:
         assert "test1" in result
         assert "claude-code" in result
         assert "running" in result
+
+    def test_cols_mnemonics(self):
+        sessions = [
+            core.SessionInfo(name="s1", process="python", metadata={"status": "active"}),
+        ]
+        result = format_session_table(sessions, cols="NSP")
+        assert "NAME" in result
+        assert "STATUS" in result
+        assert "PROCESS" in result
+        assert "DESC" not in result
+
+    def test_cols_long_names(self):
+        sessions = [
+            core.SessionInfo(name="s1", metadata={"branch": "feat/x"}),
+        ]
+        result = format_session_table(sessions, cols="NAME,BRANCH")
+        assert "NAME" in result
+        assert "BRANCH" in result
+        assert "feat/x" in result
+
+    def test_cols_all(self):
+        sessions = [
+            core.SessionInfo(
+                name="s1", process="zsh", working_dir="/tmp",
+                metadata={"status": "a", "desc": "b", "repo": "/r", "task": "t", "branch": "br"},
+            ),
+        ]
+        result = format_session_table(sessions, cols="NSPDWRTB")
+        for header in ("NAME", "STATUS", "PROCESS", "DESC", "DIR", "REPO", "TASK", "BRANCH"):
+            assert header in result
+
+    def test_parse_cols_invalid_mnemonic(self):
+        with pytest.raises(ValueError, match="Unknown column mnemonic"):
+            parse_cols("NXP")
+
+    def test_parse_cols_invalid_name(self):
+        with pytest.raises(ValueError, match="Unknown column"):
+            parse_cols("NAME,BOGUS")
 
 
 class TestCLI:
