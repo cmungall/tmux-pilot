@@ -321,7 +321,7 @@ class TestCLI:
             cli_main(["--version"])
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "0.2.0" in captured.out
+        assert "0.3.0" in captured.out
 
     def test_ls(self, capsys):
         cli_main(["ls"])

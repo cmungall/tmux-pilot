@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tmux-pilot"
-version = "0.2.0"
+version = "0.3.0"
 description = "A thin, opinionated CLI for managing tmux sessions that run AI coding agents"
 readme = "README.md"
 license = "MIT"
