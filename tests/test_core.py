@@ -286,7 +286,7 @@ class TestDisplay:
         assert "BRANCH" in result
         assert "feat/x" in result
 
-    def test_cols_all(self):
+    def test_cols_all_mnemonics(self):
         sessions = [
             core.SessionInfo(
                 name="s1", process="zsh", working_dir="/tmp",
@@ -294,6 +294,17 @@ class TestDisplay:
             ),
         ]
         result = format_session_table(sessions, cols="NSPDWRTB")
+        for header in ("NAME", "STATUS", "PROCESS", "DESC", "DIR", "REPO", "TASK", "BRANCH"):
+            assert header in result
+
+    def test_cols_all_keyword(self):
+        sessions = [
+            core.SessionInfo(
+                name="s1", process="zsh", working_dir="/tmp",
+                metadata={"status": "a", "desc": "b", "repo": "/r", "task": "t", "branch": "br"},
+            ),
+        ]
+        result = format_session_table(sessions, cols="ALL")
         for header in ("NAME", "STATUS", "PROCESS", "DESC", "DIR", "REPO", "TASK", "BRANCH"):
             assert header in result
 

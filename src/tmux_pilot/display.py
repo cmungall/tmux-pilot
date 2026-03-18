@@ -31,6 +31,9 @@ def parse_cols(spec: str | None) -> list[tuple[str, object]]:
     if not spec:
         spec = DEFAULT_COLS
 
+    if spec.upper() == "ALL":
+        return [(name, acc) for name, _, acc in ALL_COLUMNS]
+
     # Comma-separated long names
     if "," in spec:
         result = []
