@@ -69,6 +69,47 @@ def cmd_kill(args: argparse.Namespace) -> None:
     print(f"Killed session '{args.name}'")
 
 
+def cmd_clean(args: argparse.Namespace) -> None:
+    # Always preview first
+    try:
+        preview = core.clean_sessions(
+            target=args.name,
+            status_filter=args.status,
+            dry_run=True,
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    if not preview:
+        print("No sessions to clean.")
+        return
+
+    if args.dry_run:
+        print("Dry run — would clean:")
+        for a in preview:
+            extra = " (+ worktree)" if a.get("would_remove_worktree") else ""
+            print(f"  {a['session']}{extra}")
+        return
+
+    if not args.force and not args.name:
+        names = ", ".join(a["session"] for a in preview)
+        resp = input(f"Clean {len(preview)} session(s): {names}? [y/N] ")
+        if resp.lower() not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    actions = core.clean_sessions(target=args.name, status_filter=args.status)
+    for a in actions:
+        parts = [f"killed {a['session']}"]
+        if a.get("worktree_removed"):
+            parts.append("removed worktree")
+        if a.get("branch_deleted"):
+            parts.append("deleted branch")
+        print("  ".join(parts))
+    print(f"Cleaned {len(actions)} session(s).")
+
+
 def cmd_set(args: argparse.Namespace) -> None:
     if not core.session_exists(args.name):
         print(f"Session '{args.name}' not found.", file=sys.stderr)
@@ -130,6 +171,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="Detailed session status")
     p_status.add_argument("name", help="Session name")
 
+    # clean
+    p_clean = sub.add_parser("clean", help="Bulk cleanup of done-ish sessions + worktrees")
+    p_clean.add_argument("name", nargs="?", default=None, help="Clean a specific session")
+    p_clean.add_argument("--status", help="Filter by status (default: done/complete/finished/merged)")
+    p_clean.add_argument("--dry-run", action="store_true", help="Preview without executing")
+    p_clean.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+
     # kill
     p_kill = sub.add_parser("kill", help="Kill a session")
     p_kill.add_argument("name", help="Session name")
@@ -168,6 +216,7 @@ def main(argv: list[str] | None = None) -> None:
         "send": cmd_send,
         "jump": cmd_jump,
         "status": cmd_status,
+        "clean": cmd_clean,
         "kill": cmd_kill,
         "set": cmd_set,
         "get": cmd_get,

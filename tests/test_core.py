@@ -184,6 +184,50 @@ class TestFiltering:
         assert TEST_SESSION in names or any("tmp" in n for n in names)
 
 
+class TestClean:
+    """Test bulk cleanup of sessions."""
+
+    def test_clean_dry_run(self):
+        core.new_session(TEST_SESSION, desc="clean test")
+        core.set_metadata(TEST_SESSION, "status", "done")
+        actions = core.clean_sessions(dry_run=True)
+        names = [a["session"] for a in actions]
+        assert TEST_SESSION in names
+        # Session should still exist after dry run
+        assert core.session_exists(TEST_SESSION)
+
+    def test_clean_by_status(self):
+        core.new_session(TEST_SESSION, desc="clean test")
+        core.set_metadata(TEST_SESSION, "status", "done")
+        actions = core.clean_sessions()
+        names = [a["session"] for a in actions]
+        assert TEST_SESSION in names
+        assert not core.session_exists(TEST_SESSION)
+
+    def test_clean_skips_active(self):
+        core.new_session(TEST_SESSION, desc="active test")
+        core.set_metadata(TEST_SESSION, "status", "active")
+        actions = core.clean_sessions()
+        names = [a["session"] for a in actions]
+        assert TEST_SESSION not in names
+        assert core.session_exists(TEST_SESSION)
+
+    def test_clean_specific_session(self):
+        core.new_session(TEST_SESSION, desc="target test")
+        actions = core.clean_sessions(target=TEST_SESSION)
+        assert len(actions) == 1
+        assert actions[0]["session"] == TEST_SESSION
+        assert not core.session_exists(TEST_SESSION)
+
+    def test_clean_custom_status(self):
+        core.new_session(TEST_SESSION, desc="custom test")
+        core.set_metadata(TEST_SESSION, "status", "archived")
+        actions = core.clean_sessions(status_filter="archived")
+        names = [a["session"] for a in actions]
+        assert TEST_SESSION in names
+        assert not core.session_exists(TEST_SESSION)
+
+
 class TestSessionInfoDict:
     """Test SessionInfo.to_dict serialization."""
 

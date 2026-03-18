@@ -285,6 +285,109 @@ def _is_inside_tmux() -> bool:
     return "TMUX" in os.environ
 
 
+DONE_STATUSES = {"done", "complete", "completed", "finished", "merged"}
+
+
+def _is_git_worktree(path: str) -> bool:
+    """Check if a path is a git worktree (not the main working tree)."""
+    if not path or not Path(path).is_dir():
+        return False
+    result = _run(
+        ["git", "-C", path, "rev-parse", "--git-common-dir"],
+        check=False, timeout=3,
+    )
+    if result.returncode != 0:
+        return False
+    common = result.stdout.strip()
+    result2 = _run(
+        ["git", "-C", path, "rev-parse", "--git-dir"],
+        check=False, timeout=3,
+    )
+    if result2.returncode != 0:
+        return False
+    git_dir = result2.stdout.strip()
+    # In a worktree, git-dir is something like ../.git/worktrees/name
+    # while git-common-dir is ../.git — they differ.
+    return Path(git_dir).resolve() != Path(common).resolve()
+
+
+def _remove_worktree(path: str) -> bool:
+    """Remove a git worktree. Returns True if removed."""
+    result = _run(["git", "worktree", "remove", "--force", path], check=False, timeout=10)
+    return result.returncode == 0
+
+
+def _is_branch_merged(path: str, branch: str) -> bool:
+    """Check if a branch is merged into the main branch."""
+    result = _run(
+        ["git", "-C", path, "branch", "--merged", "HEAD", "--list", branch],
+        check=False, timeout=5,
+    )
+    return result.returncode == 0 and branch in (result.stdout or "")
+
+
+def _delete_branch(path: str, branch: str) -> bool:
+    """Delete a local git branch. Returns True if deleted."""
+    result = _run(["git", "-C", path, "branch", "-d", branch], check=False, timeout=5)
+    return result.returncode == 0
+
+
+def clean_sessions(
+    *,
+    target: str | None = None,
+    status_filter: str | None = None,
+    dry_run: bool = False,
+) -> list[dict]:
+    """Clean up done-ish sessions, their worktrees, and merged branches.
+
+    Returns a list of action dicts describing what was (or would be) done.
+    """
+    if target:
+        sessions = list_sessions()
+        matches = [s for s in sessions if s.name == target]
+        if not matches:
+            matches = [s for s in sessions if target.lower() in s.name.lower()]
+        if not matches:
+            raise RuntimeError(f"No session matching '{target}'")
+    else:
+        filter_statuses = {s.strip().lower() for s in (status_filter or "done").split(",")}
+        if not status_filter:
+            filter_statuses = DONE_STATUSES
+        sessions = list_sessions()
+        matches = [s for s in sessions if s.status.lower() in filter_statuses]
+
+    actions: list[dict] = []
+    for s in matches:
+        action: dict = {"session": s.name, "killed": False, "worktree_removed": False, "branch_deleted": False}
+        wdir = s.working_dir
+        branch = s.metadata.get("branch", "")
+
+        if dry_run:
+            action["dry_run"] = True
+            action["would_kill"] = True
+            action["would_remove_worktree"] = bool(wdir) and _is_git_worktree(wdir)
+            actions.append(action)
+            continue
+
+        # Kill the session
+        kill_session(s.name)
+        action["killed"] = True
+
+        # Remove worktree if applicable
+        if wdir and _is_git_worktree(wdir):
+            action["worktree_removed"] = _remove_worktree(wdir)
+
+        # Delete merged branch if applicable
+        if branch and wdir:
+            # Use parent of worktree or repo path for branch ops
+            repo = s.metadata.get("repo", wdir)
+            if _is_branch_merged(repo, branch):
+                action["branch_deleted"] = _delete_branch(repo, branch)
+
+        actions.append(action)
+    return actions
+
+
 def get_session_status(name: str) -> dict:
     """Get detailed status for a session using batched format strings."""
     if not session_exists(name):
