@@ -14,12 +14,19 @@ METADATA_KEYS = ("repo", "task", "desc", "status", "origin", "branch", "needs")
 # Map pane_current_command to friendly process names
 PROCESS_ALIASES: dict[str, str] = {
     "claude": "claude-code",
-    "node": "claude-code",  # claude-code runs as node
     "codex": "codex",
     "python": "python",
     "zsh": "zsh",
     "bash": "bash",
     "fish": "fish",
+}
+
+# When pane_current_command is "node", we need to disambiguate:
+# Claude Code runs as node, but so does Codex.
+NODE_DISAMBIGUATION: dict[str, str] = {
+    "codex": "codex",
+    "claude": "claude-code",
+    "openai": "codex",
 }
 
 # Claude Code reports its version as pane_current_command (e.g. "2.1.76")
@@ -59,13 +66,24 @@ def tmux_running() -> bool:
     return result.returncode == 0
 
 
-def _detect_process(pane_cmd: str) -> str:
+def _detect_process(pane_cmd: str, session_name: str = "") -> str:
     """Map a pane_current_command to a friendly name."""
     cmd = pane_cmd.strip()
     # Claude Code reports its version number as the command (e.g. "2.1.76")
     if _VERSION_RE.match(cmd):
         return "claude-code"
     cmd_lower = cmd.lower()
+    # "node" is ambiguous — both Claude Code and Codex run as node.
+    # For tp ls (fast path): use session name / @task hints.
+    # For tp status (slow path): inspect child process command line.
+    if cmd_lower == "node":
+        name_lower = session_name.lower()
+        for key, alias in NODE_DISAMBIGUATION.items():
+            if key in name_lower:
+                return alias
+        # Version strings like "2.1.78" are Claude Code
+        # Otherwise report as "node" (ambiguous)
+        return "node"
     for key, alias in PROCESS_ALIASES.items():
         if key in cmd_lower:
             return alias
@@ -122,7 +140,7 @@ def _parse_session_line(line: str) -> SessionInfo | None:
 
     return SessionInfo(
         name=name,
-        process=_detect_process(pane_cmd),
+        process=_detect_process(pane_cmd, name),
         working_dir=pane_path,
         metadata=meta,
     )
