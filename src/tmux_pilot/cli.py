@@ -6,7 +6,9 @@ import argparse
 import json
 import sys
 
-from . import core, display
+from pathlib import Path
+
+from . import core, display, hooks
 
 
 def cmd_ls(args: argparse.Namespace) -> None:
@@ -17,6 +19,8 @@ def cmd_ls(args: argparse.Namespace) -> None:
     )
     if args.json:
         print(json.dumps([s.to_dict() for s in sessions], indent=2))
+    elif args.fzf:
+        print(display.format_fzf(sessions, cols=args.cols))
     else:
         print(display.format_session_table(sessions, cols=args.cols))
 
@@ -128,6 +132,71 @@ def cmd_get(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_install_hooks(args: argparse.Namespace) -> None:
+    hooks_dir = Path(args.path) if args.path else None
+    if args.uninstall:
+        actions = hooks.uninstall_hooks(hooks_dir)
+        for h in actions["hooks_removed"]:
+            print(f"  removed {h}")
+        if actions["restored_hooks_path"]:
+            print(f"  restored core.hooksPath -> {actions['restored_hooks_path']}")
+        else:
+            print("  unset core.hooksPath")
+        print("Uninstalled tmux-pilot hooks.")
+    else:
+        actions = hooks.install_hooks(hooks_dir)
+        for h in actions["hooks_installed"]:
+            print(f"  installed {h}")
+        print(f"Hooks in {actions['hooks_dir']}, core.hooksPath configured.")
+
+
+def cmd_reap(args: argparse.Namespace) -> None:
+    from . import reaper
+    results = reaper.reap_sessions(
+        dry_run=args.dry_run,
+        force=args.force,
+        include_no_pr=args.include_no_pr,
+    )
+    if not results:
+        print("No sessions to reap.")
+        return
+
+    if args.dry_run:
+        print("Dry run -- would reap:")
+        for r in results:
+            flag = r.get("reason", "")
+            print(f"  {r['session']}  branch={r.get('branch', '?')}  pr=#{r.get('pr', '-')}  [{flag}]")
+        return
+
+    if not args.force:
+        names = ", ".join(r["session"] for r in results if r.get("action") == "confirm")
+        if names:
+            resp = input(f"Reap session(s): {names}? [y/N] ")
+            if resp.lower() not in ("y", "yes"):
+                print("Aborted.")
+                return
+            # Actually reap after confirmation
+            results = reaper.reap_sessions(
+                dry_run=False,
+                force=True,
+                include_no_pr=args.include_no_pr,
+            )
+
+    for r in results:
+        parts = [r["session"]]
+        if r.get("killed"):
+            parts.append("killed")
+        if r.get("worktree_removed"):
+            parts.append("worktree removed")
+        if r.get("branch_deleted"):
+            parts.append("branch deleted")
+        if r.get("skipped"):
+            parts.append(f"skipped ({r.get('reason', '')})")
+        print("  ".join(parts))
+    reaped = sum(1 for r in results if r.get("killed"))
+    print(f"Reaped {reaped} session(s).")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tp",
@@ -144,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ls = sub.add_parser("ls", help="List sessions with metadata")
     p_ls.add_argument("--json", action="store_true", help="Output as JSON")
     p_ls.add_argument("--cols", help="Columns to show: mnemonics (NSP) or names (NAME,STATUS,PROCESS)")
+    p_ls.add_argument("--fzf", action="store_true", help="Tab-separated output for fzf piping")
     p_ls.add_argument("--status", help="Filter by status (e.g. active, done)")
     p_ls.add_argument("--repo", help="Filter by repo name (substring match)")
     p_ls.add_argument("--process", help="Filter by process (e.g. claude-code, python)")
@@ -194,6 +264,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_get.add_argument("name", help="Session name")
     p_get.add_argument("key", help="Metadata key")
 
+    # install-hooks
+    p_hooks = sub.add_parser("install-hooks", help="Install git hooks for session lifecycle")
+    p_hooks.add_argument("--path", help="Custom hooks directory (default: ~/.config/git/hooks/)")
+    p_hooks.add_argument("--uninstall", action="store_true", help="Remove hooks and restore previous hooksPath")
+
+    # reap
+    p_reap = sub.add_parser("reap", help="Reap sessions whose PRs are merged")
+    p_reap.add_argument("--dry-run", action="store_true", help="Preview without executing")
+    p_reap.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    p_reap.add_argument("--include-no-pr", action="store_true", help="Also flag clean sessions with no PR")
+
     return parser
 
 
@@ -221,6 +302,8 @@ def main(argv: list[str] | None = None) -> None:
         "kill": cmd_kill,
         "set": cmd_set,
         "get": cmd_get,
+        "install-hooks": cmd_install_hooks,
+        "reap": cmd_reap,
     }
     handlers[args.command](args)
 

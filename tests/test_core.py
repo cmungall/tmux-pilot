@@ -310,7 +310,7 @@ class TestDisplay:
 
     def test_parse_cols_invalid_mnemonic(self):
         with pytest.raises(ValueError, match="Unknown column mnemonic"):
-            parse_cols("NXP")
+            parse_cols("NZP")
 
     def test_parse_cols_invalid_name(self):
         with pytest.raises(ValueError, match="Unknown column"):
