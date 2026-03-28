@@ -14,6 +14,8 @@ ALL_COLUMNS: list[tuple[str, str, object]] = [
     ("REPO", "R", lambda s: _shorten_path(s.metadata.get("repo", "")) or "-"),
     ("TASK", "T", lambda s: s.metadata.get("task", "") or "-"),
     ("BRANCH", "B", lambda s: s.metadata.get("branch", "") or "-"),
+    ("PR", "G", lambda s: s.metadata.get("pr", "") or "-"),
+    ("PR_STATE", "X", lambda s: s.metadata.get("pr_state", "") or "-"),
 ]
 
 _COL_BY_MNEMONIC = {m: (name, acc) for name, m, acc in ALL_COLUMNS}
@@ -81,6 +83,24 @@ def format_session_table(sessions: list[SessionInfo], cols: str | None = None) -
     for row in rows:
         lines.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
 
+    return "\n".join(lines)
+
+
+def format_fzf(sessions: list[SessionInfo], cols: str | None = None) -> str:
+    """Format sessions as tab-separated lines for fzf piping.
+
+    First field is the raw session name (for selection), remaining
+    fields are the human-readable column values.
+    """
+    if not sessions:
+        return ""
+
+    columns = parse_cols(cols)
+    accessors = [acc for _, acc in columns]
+    lines = []
+    for s in sessions:
+        fields = [s.name] + [acc(s) for acc in accessors]
+        lines.append("\t".join(fields))
     return "\n".join(lines)
 
 

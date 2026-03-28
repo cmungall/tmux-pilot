@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Metadata keys stored as tmux user options (@-prefixed)
-METADATA_KEYS = ("repo", "task", "desc", "status", "origin", "branch", "needs")
+METADATA_KEYS = ("repo", "task", "desc", "status", "origin", "branch", "needs", "last_commit", "pr", "pr_state", "pushing")
 
 # Map pane_current_command to friendly process names
 PROCESS_ALIASES: dict[str, str] = {
