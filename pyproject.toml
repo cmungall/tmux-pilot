@@ -34,5 +34,21 @@ tp = "tmux_pilot.cli:main"
 Homepage = "https://github.com/cmungall/tmux-pilot"
 Repository = "https://github.com/cmungall/tmux-pilot"
 
+[dependency-groups]
+dev = [
+    "mypy>=1.15.0",
+    "pytest>=8.3.5",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.11.2",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["tmux_pilot"]
+
+[tool.ruff]
+line-length = 100

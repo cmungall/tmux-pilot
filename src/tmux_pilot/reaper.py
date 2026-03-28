@@ -80,12 +80,9 @@ def reap_sessions(
         }
 
         # Decide whether to reap
-        should_reap = False
         if pr_info and pr_info["state"] == "MERGED":
-            should_reap = True
             action["reason"] = "pr-merged"
         elif not pr_info and include_no_pr:
-            should_reap = True
             action["reason"] = "no-pr"
         else:
             if pr_info:

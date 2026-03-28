@@ -29,7 +29,34 @@ def cmd_new(args: argparse.Namespace) -> None:
     if core.session_exists(args.name):
         print(f"Session '{args.name}' already exists.", file=sys.stderr)
         sys.exit(1)
-    core.new_session(args.name, directory=args.directory, desc=args.desc)
+
+    try:
+        if core.should_use_profile_mode(
+            profile_name=args.profile,
+            issue=args.issue,
+            agent=args.agent,
+            repo=args.repo,
+            no_agent=args.no_agent,
+            prompt=args.prompt,
+        ):
+            if args.directory:
+                raise RuntimeError("--directory is not supported with profile-based sessions; use --repo")
+            core.create_profile_session(
+                args.name,
+                profile_name=args.profile,
+                issue=args.issue,
+                agent=args.agent,
+                repo=args.repo,
+                no_agent=args.no_agent,
+                prompt=args.prompt,
+                desc=args.desc,
+            )
+        else:
+            core.new_session(args.name, directory=args.directory, desc=args.desc)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
     print(f"Created session '{args.name}'")
 
 
@@ -221,6 +248,12 @@ def build_parser() -> argparse.ArgumentParser:
     # new
     p_new = sub.add_parser("new", help="Create a new session")
     p_new.add_argument("name", help="Session name")
+    p_new.add_argument("--profile", help="Named profile from ~/.config/tmux-pilot/profiles.toml")
+    p_new.add_argument("--issue", type=int, help="GitHub issue number to derive metadata from")
+    p_new.add_argument("--agent", help="Override the profile's agent")
+    p_new.add_argument("--repo", help="Override the profile's repository")
+    p_new.add_argument("--no-agent", action="store_true", help="Create the session without launching an agent")
+    p_new.add_argument("--prompt", help="Initial prompt to send to the agent after startup")
     p_new.add_argument("-c", "--directory", help="Working directory")
     p_new.add_argument("-d", "--desc", help="Description")
 
