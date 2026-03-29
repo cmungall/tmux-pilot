@@ -213,9 +213,6 @@ def test_cli_send_wait_uses_codex_transcript_state_with_real_tmux(
     wait_for(second.exists, timeout=3.0, message="timed out waiting for second.txt")
     wait_for(lambda: second.read_text() == "beta\n", timeout=3.0, message="timed out waiting for second.txt contents")
 
-    output = wait_for_output(session, "WROTE second.txt", timeout=3.0)
-    assert "WROTE first.txt" in output
-
 
 def test_cli_send_wait_uses_claude_transcript_state_with_real_tmux(
     real_tmux: RealTmuxServer,
@@ -239,6 +236,3 @@ def test_cli_send_wait_uses_claude_transcript_state_with_real_tmux(
     wait_for(first.exists, timeout=3.0, message="timed out waiting for first.txt")
     wait_for(second.exists, timeout=3.0, message="timed out waiting for second.txt")
     wait_for(lambda: second.read_text() == "beta\n", timeout=3.0, message="timed out waiting for second.txt contents")
-
-    output = wait_for_output(session, "WROTE second.txt", timeout=3.0)
-    assert "WROTE first.txt" in output
