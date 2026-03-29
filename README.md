@@ -44,6 +44,15 @@ tp status auth-flow
 tp kill auth-flow
 ```
 
+## Docs
+
+Detailed documentation lives under [`docs/`](./docs/README.md) and is organized using Diataxis:
+
+- tutorial: [`docs/tutorials/drive-a-kept-alive-agent-session.md`](./docs/tutorials/drive-a-kept-alive-agent-session.md)
+- how-to: [`docs/how-to/wait-for-interactive-agents.md`](./docs/how-to/wait-for-interactive-agents.md)
+- explanation: [`docs/explanation/file-backed-agent-state.md`](./docs/explanation/file-backed-agent-state.md)
+- reference: [`docs/reference/agent-state.md`](./docs/reference/agent-state.md)
+
 ## Commands
 
 ### `tp ls` — List sessions
@@ -77,6 +86,7 @@ tp peek NAME -n 100            # last 100 lines
 
 ```bash
 tp send NAME "any command"     # sends text + Enter
+tp send --wait NAME "follow-up instruction"
 tp send NAME "claude-code --print 'fix the auth bug'"
 ```
 

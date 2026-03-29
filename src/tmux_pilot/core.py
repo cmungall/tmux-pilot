@@ -39,6 +39,7 @@ NODE_DISAMBIGUATION: dict[str, str] = {
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 PROFILE_CONFIG_PATH = Path.home() / ".config" / "tmux-pilot" / "profiles.toml"
 _DEFAULT_WORKTREE_BASE = "~/worktrees"
+_SEND_KEYS_SETTLE_DELAY = 0.1
 
 
 @dataclass
@@ -246,8 +247,31 @@ def peek_session(name: str, lines: int = 50, timeout: int = 3) -> str:
 
 
 def send_keys(name: str, text: str) -> None:
-    """Send text + Enter to a session's active pane."""
-    _tmux("send-keys", "-t", name, text, "Enter")
+    """Send literal text, then press Enter in a separate tmux call.
+
+    Interactive TUIs such as Codex can leave the prompt unsubmitted when text
+    and Enter are bundled into a single `tmux send-keys` invocation.
+    """
+    if text:
+        _tmux("send-keys", "-t", name, "-l", text)
+        time.sleep(_SEND_KEYS_SETTLE_DELAY)
+    _tmux("send-keys", "-t", name, "Enter")
+
+
+def send_text(
+    name: str,
+    text: str,
+    *,
+    wait: bool = False,
+    timeout: float = 30.0,
+    interval: float = 0.25,
+) -> dict[str, str | bool]:
+    """Optionally wait for a session to become ready, then send text."""
+    agent: dict[str, str | bool] = {}
+    if wait:
+        agent = wait_until_session_ready(name, timeout=timeout, interval=interval)
+    send_keys(name, text)
+    return agent
 
 
 def kill_session(name: str) -> None:
@@ -518,11 +542,105 @@ def create_profile_session(
     }
 
 
-def _get_agent_state(session_name: str, pane_command: str, pane_output: str | None = None) -> dict[str, str]:
+def _get_agent_state(
+    session_name: str,
+    pane_command: str,
+    pane_output: str | None = None,
+    *,
+    pane_path: str = "",
+    transcript_path: Path | None = None,
+) -> dict[str, str | bool]:
     """Detect the active agent plugin and return its current state."""
     from .plugins.agents import get_agent_state
 
-    return get_agent_state(session_name, pane_command, pane_output=pane_output)
+    if not pane_path and session_exists(session_name):
+        pane_path = _tmux("display-message", "-t", session_name, "-p", "#{pane_current_path}", check=False)
+    return get_agent_state(
+        session_name,
+        pane_command,
+        pane_output=pane_output,
+        working_dir=pane_path,
+        transcript_path=transcript_path,
+    )
+
+
+def _session_pane_details(name: str) -> tuple[str, str, str, dict[str, str]]:
+    """Fetch pane command, path, pid, and metadata in one tmux call."""
+    pane_fmt = "#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t" + _META_FMT
+    raw = _tmux("list-panes", "-t", name, "-F", pane_fmt)
+    parts = raw.splitlines()[0].split("\t") if raw else []
+
+    pane_cmd = parts[0] if len(parts) > 0 else ""
+    pane_path = parts[1] if len(parts) > 1 else ""
+    pane_pid = parts[2] if len(parts) > 2 else ""
+
+    meta: dict[str, str] = {}
+    for i, key in enumerate(METADATA_KEYS):
+        val = parts[3 + i] if (3 + i) < len(parts) else ""
+        if val:
+            meta[key] = val
+
+    if not meta.get("branch") and pane_path:
+        branch = _detect_git_branch(pane_path)
+        if branch:
+            meta["branch"] = branch
+
+    return pane_cmd, pane_path, pane_pid, meta
+
+
+def _agent_is_ready(agent: dict[str, str | bool]) -> bool:
+    ready = agent.get("ready")
+    if isinstance(ready, bool):
+        return ready
+    state = agent.get("state")
+    return isinstance(state, str) and state in {"idle", "completed"}
+
+
+def wait_until_session_ready(
+    name: str,
+    *,
+    timeout: float = 30.0,
+    interval: float = 0.25,
+) -> dict[str, str | bool]:
+    """Wait until a session's active agent is ready for more input."""
+    if not session_exists(name):
+        raise RuntimeError(f"Session '{name}' not found")
+
+    from . import agent_sessions
+
+    pane_cmd, pane_path, _pane_pid, _meta = _session_pane_details(name)
+    detected_process = _detect_process(pane_cmd, name)
+    transcript_path: Path | None = None
+    deadline = time.monotonic() + timeout
+
+    while True:
+        pane_output = peek_session(name, lines=200)
+        agent = _get_agent_state(
+            name,
+            detected_process,
+            pane_output=pane_output,
+            pane_path=pane_path,
+            transcript_path=transcript_path,
+        )
+
+        agent_type = agent.get("type")
+        if isinstance(agent_type, str) and pane_path and transcript_path is None:
+            transcript_path = agent_sessions.find_transcript_for_cwd(agent_type, pane_path)
+            if transcript_path is not None:
+                agent = _get_agent_state(
+                    name,
+                    detected_process,
+                    pane_output=pane_output,
+                    pane_path=pane_path,
+                    transcript_path=transcript_path,
+                )
+
+        if _agent_is_ready(agent):
+            return agent
+        if time.monotonic() >= deadline:
+            state = agent.get("state", "unknown")
+            raise RuntimeError(f"Timed out waiting for session '{name}' to become ready (last state: {state})")
+        time.sleep(interval)
 
 
 DONE_STATUSES = {"done", "complete", "completed", "finished", "merged"}
@@ -633,35 +751,17 @@ def get_session_status(name: str) -> dict:
     if not session_exists(name):
         raise RuntimeError(f"Session '{name}' not found")
 
-    # Fetch pane info + all metadata in one call
-    pane_fmt = (
-        "#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t"
-        + _META_FMT
-    )
-    raw = _tmux("list-panes", "-t", name, "-F", pane_fmt)
-    parts = raw.splitlines()[0].split("\t") if raw else []
-
-    pane_cmd = parts[0] if len(parts) > 0 else ""
-    pane_path = parts[1] if len(parts) > 1 else ""
-    pane_pid = parts[2] if len(parts) > 2 else ""
-
-    meta = {}
-    for i, key in enumerate(METADATA_KEYS):
-        val = parts[3 + i] if (3 + i) < len(parts) else ""
-        if val:
-            meta[key] = val
-
-    if not meta.get("branch") and pane_path:
-        branch = _detect_git_branch(pane_path)
-        if branch:
-            meta["branch"] = branch
-
+    pane_cmd, pane_path, pane_pid, meta = _session_pane_details(name)
     scrollback = peek_session(name, lines=5)
-    agent = _get_agent_state(name, _detect_process(pane_cmd, name))
+    agent = _get_agent_state(
+        name,
+        _detect_process(pane_cmd, name),
+        pane_path=pane_path,
+    )
 
     return {
         "name": name,
-        "process": _detect_process(pane_cmd),
+        "process": _detect_process(pane_cmd, name),
         "pid": pane_pid,
         "working_dir": pane_path,
         "metadata": meta,
