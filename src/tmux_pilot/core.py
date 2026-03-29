@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
+import os
+import re
 import shutil
+import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    import tomllib  # type: ignore[import-untyped]
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 # Metadata keys stored as tmux user options (@-prefixed)
 METADATA_KEYS = ("repo", "task", "desc", "status", "origin", "branch", "needs", "last_commit", "pr", "pr_state", "pushing")
@@ -29,9 +36,21 @@ NODE_DISAMBIGUATION: dict[str, str] = {
     "openai": "codex",
 }
 
-# Claude Code reports its version as pane_current_command (e.g. "2.1.76")
-import re
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+PROFILE_CONFIG_PATH = Path.home() / ".config" / "tmux-pilot" / "profiles.toml"
+_DEFAULT_WORKTREE_BASE = "~/worktrees"
+
+
+@dataclass
+class SessionProfile:
+    """Resolved project profile for `tp new --profile`."""
+
+    name: str
+    repo: str = ""
+    agent: str = ""
+    agent_args: str = ""
+    worktree_base: str = _DEFAULT_WORKTREE_BASE
+    branch_prefix: str = ""
 
 
 def _run(
@@ -39,6 +58,7 @@ def _run(
     *,
     check: bool = True,
     capture: bool = True,
+    cwd: str | None = None,
     timeout: int = 5,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess, returning CompletedProcess."""
@@ -48,6 +68,7 @@ def _run(
             capture_output=capture,
             text=True,
             check=check,
+            cwd=cwd,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -98,6 +119,7 @@ class SessionInfo:
     process: str = "unknown"
     working_dir: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    agent_state: str = ""
 
     @property
     def status(self) -> str:
@@ -118,6 +140,7 @@ class SessionInfo:
             "process": self.process,
             "working_dir": self.working_dir,
             "metadata": dict(self.metadata),
+            "agent_state": self.agent_state,
         }
 
 
@@ -167,6 +190,15 @@ def list_sessions(
         if info is None or info.name in seen:
             continue
         seen.add(info.name)
+
+        if not info.metadata.get("branch") and info.working_dir:
+            branch = _detect_git_branch(info.working_dir)
+            if branch:
+                info.metadata["branch"] = branch
+
+        # Agent state detection is expensive (captures pane output).
+        # Skip in list_sessions; compute on demand in get_session_status.
+        info.agent_state = ""
 
         if status and info.status.lower() != status.lower():
             continue
@@ -299,8 +331,198 @@ def jump_session(name: str | None = None) -> None:
 
 def _is_inside_tmux() -> bool:
     """Check if we're currently inside a tmux session."""
-    import os
     return "TMUX" in os.environ
+
+
+def load_profiles(path: Path | None = None) -> dict[str, SessionProfile]:
+    """Load configured session profiles from TOML."""
+    config_path = path or PROFILE_CONFIG_PATH
+    if not config_path.exists():
+        return {}
+
+    with config_path.open("rb") as handle:
+        data = tomllib.load(handle)
+
+    profiles: dict[str, SessionProfile] = {}
+    for name, values in data.items():
+        if not isinstance(values, dict):
+            continue
+        profiles[name] = SessionProfile(
+            name=name,
+            repo=str(values.get("repo", "")),
+            agent=str(values.get("agent", "")),
+            agent_args=str(values.get("agent_args", "")),
+            worktree_base=str(values.get("worktree_base", _DEFAULT_WORKTREE_BASE)),
+            branch_prefix=str(values.get("branch_prefix", "")),
+        )
+    return profiles
+
+
+def should_use_profile_mode(
+    *,
+    profile_name: str | None = None,
+    issue: int | None = None,
+    agent: str | None = None,
+    repo: str | None = None,
+    no_agent: bool = False,
+    prompt: str | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Return True when `tp new` should use profile-backed creation."""
+    if profile_name or issue is not None or agent or repo or no_agent or prompt:
+        return True
+    return "default" in load_profiles(path)
+
+
+def resolve_session_profile(
+    profile_name: str | None = None,
+    *,
+    issue: int | None = None,
+    repo_override: str | None = None,
+    agent_override: str | None = None,
+    path: Path | None = None,
+) -> SessionProfile | None:
+    """Resolve a profile, merging explicit settings with `[default]`."""
+    profiles = load_profiles(path)
+    if not profiles and not repo_override and not agent_override:
+        return None
+
+    if profile_name and profile_name not in profiles:
+        raise RuntimeError(f"Profile '{profile_name}' not found in {path or PROFILE_CONFIG_PATH}")
+
+    selected_name = profile_name or ("default" if "default" in profiles else "")
+    default = profiles.get("default", SessionProfile(name="default"))
+    selected = profiles.get(selected_name, SessionProfile(name=selected_name or "default"))
+
+    branch_prefix = selected.branch_prefix or default.branch_prefix
+    if not branch_prefix:
+        branch_prefix = "fix" if issue is not None else "feat"
+
+    return SessionProfile(
+        name=selected_name or "default",
+        repo=repo_override or selected.repo or default.repo,
+        agent=agent_override or selected.agent or default.agent,
+        agent_args=selected.agent_args or default.agent_args,
+        worktree_base=selected.worktree_base or default.worktree_base or _DEFAULT_WORKTREE_BASE,
+        branch_prefix=branch_prefix,
+    )
+
+
+def _slugify_branch_component(value: str) -> str:
+    """Normalize a session name so it is safe to embed in a git branch name."""
+    return re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-").lower()
+
+
+def _detect_git_branch(path: str) -> str:
+    """Detect the current git branch for a working directory."""
+    if not path:
+        return ""
+    result = _run(
+        ["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"],
+        check=False,
+        timeout=3,
+    )
+    if result.returncode != 0:
+        return ""
+    branch = result.stdout.strip()
+    return "" if branch == "HEAD" else branch
+
+
+def _git(args: list[str], *, cwd: str, check: bool = True, timeout: int = 15) -> str:
+    """Run a git command inside a repository."""
+    result = _run(["git", *args], check=check, cwd=cwd, timeout=timeout)
+    if check and result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"git {' '.join(args)} failed")
+    return result.stdout.strip()
+
+
+def _fetch_issue_title(repo_path: str, issue_number: int) -> str:
+    """Fetch a GitHub issue title for metadata."""
+    result = _run(
+        ["gh", "issue", "view", str(issue_number), "--json", "title", "-q", ".title"],
+        check=False,
+        cwd=repo_path,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"Failed to fetch issue #{issue_number}")
+    return result.stdout.strip()
+
+
+def _launch_agent(session_name: str, agent: str, agent_args: str = "") -> None:
+    """Launch the configured agent inside the tmux session."""
+    command = " ".join(part for part in (agent.strip(), agent_args.strip()) if part)
+    if command:
+        send_keys(session_name, command)
+
+
+def create_profile_session(
+    name: str,
+    *,
+    profile_name: str | None = None,
+    issue: int | None = None,
+    agent: str | None = None,
+    repo: str | None = None,
+    no_agent: bool = False,
+    prompt: str | None = None,
+    desc: str | None = None,
+    config_path: Path | None = None,
+) -> dict[str, str]:
+    """Create a worktree-backed tmux session from a resolved profile."""
+    profile = resolve_session_profile(
+        profile_name,
+        issue=issue,
+        repo_override=repo,
+        agent_override=agent,
+        path=config_path,
+    )
+    if profile is None or not profile.repo:
+        raise RuntimeError("No repo configured for profile-based session creation")
+
+    repo_path = str(Path(profile.repo).expanduser().resolve())
+    worktree_base = Path(profile.worktree_base).expanduser().resolve()
+    worktree_dir = worktree_base / f"{Path(repo_path).name}-{name}"
+
+    branch_slug = _slugify_branch_component(name)
+    branch = f"{profile.branch_prefix}/{branch_slug}"
+    if issue is not None:
+        branch = f"{profile.branch_prefix}/{issue}-{branch_slug}"
+
+    issue_title = _fetch_issue_title(repo_path, issue) if issue is not None else ""
+
+    _git(["fetch", "origin"], cwd=repo_path)
+    _git(
+        ["worktree", "add", "-b", branch, str(worktree_dir), "origin/main"],
+        cwd=repo_path,
+    )
+
+    new_session(name, directory=str(worktree_dir), desc=issue_title or desc)
+    set_metadata(name, "repo", repo_path)
+    set_metadata(name, "branch", branch)
+    set_metadata(name, "status", "active")
+    if issue_title:
+        set_metadata(name, "desc", issue_title)
+
+    if not no_agent and profile.agent:
+        _launch_agent(name, profile.agent, profile.agent_args)
+        if prompt:
+            time.sleep(5)
+            send_keys(name, prompt)
+
+    return {
+        "repo": repo_path,
+        "worktree": str(worktree_dir),
+        "branch": branch,
+        "agent": profile.agent,
+        "desc": issue_title or desc or "",
+    }
+
+
+def _get_agent_state(session_name: str, pane_command: str, pane_output: str | None = None) -> dict[str, str]:
+    """Detect the active agent plugin and return its current state."""
+    from .plugins.agents import get_agent_state
+
+    return get_agent_state(session_name, pane_command, pane_output=pane_output)
 
 
 DONE_STATUSES = {"done", "complete", "completed", "finished", "merged"}
@@ -429,7 +651,13 @@ def get_session_status(name: str) -> dict:
         if val:
             meta[key] = val
 
+    if not meta.get("branch") and pane_path:
+        branch = _detect_git_branch(pane_path)
+        if branch:
+            meta["branch"] = branch
+
     scrollback = peek_session(name, lines=5)
+    agent = _get_agent_state(name, _detect_process(pane_cmd, name))
 
     return {
         "name": name,
@@ -438,4 +666,5 @@ def get_session_status(name: str) -> dict:
         "working_dir": pane_path,
         "metadata": meta,
         "scrollback_tail": scrollback,
+        "agent": agent,
     }

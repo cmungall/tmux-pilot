@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .core import SessionInfo
 
+ColumnAccessor = Callable[[SessionInfo], str]
+
 # All available columns: (long_name, mnemonic, accessor)
-ALL_COLUMNS: list[tuple[str, str, object]] = [
+ALL_COLUMNS: list[tuple[str, str, ColumnAccessor]] = [
     ("NAME", "N", lambda s: s.name),
     ("STATUS", "S", lambda s: s.status or "-"),
     ("PROCESS", "P", lambda s: s.process),
+    ("AGENT_STATE", "A", lambda s: s.agent_state or "-"),
     ("DESC", "D", lambda s: s.desc or "-"),
     ("DIR", "W", lambda s: _shorten_path(s.working_dir)),
     ("REPO", "R", lambda s: _shorten_path(s.metadata.get("repo", "")) or "-"),
@@ -21,10 +26,10 @@ ALL_COLUMNS: list[tuple[str, str, object]] = [
 _COL_BY_MNEMONIC = {m: (name, acc) for name, m, acc in ALL_COLUMNS}
 _COL_BY_NAME = {name: (name, acc) for name, _, acc in ALL_COLUMNS}
 
-DEFAULT_COLS = "NSPDW"
+DEFAULT_COLS = "NSPADW"
 
 
-def parse_cols(spec: str | None) -> list[tuple[str, object]]:
+def parse_cols(spec: str | None) -> list[tuple[str, ColumnAccessor]]:
     """Parse a --cols spec into a list of (header, accessor) tuples.
 
     Accepts either single-letter mnemonics (e.g. "NSP") or
@@ -112,6 +117,10 @@ def format_status(info: dict) -> str:
         f"PID:      {info['pid']}",
         f"Dir:      {info['working_dir']}",
     ]
+
+    agent = info.get("agent", {})
+    if agent:
+        lines.append(f"Agent:    {agent.get('type', 'unknown')} ({agent.get('state', 'unknown')})")
 
     meta = info.get("metadata", {})
     if meta:
