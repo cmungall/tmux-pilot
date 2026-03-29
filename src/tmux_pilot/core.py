@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -17,7 +18,20 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[import-not-found]
 
 # Metadata keys stored as tmux user options (@-prefixed)
-METADATA_KEYS = ("repo", "task", "desc", "status", "origin", "branch", "needs", "last_commit", "pr", "pr_state", "pushing")
+METADATA_KEYS = (
+    "repo",
+    "task",
+    "desc",
+    "status",
+    "origin",
+    "branch",
+    "needs",
+    "last_commit",
+    "last_send",
+    "pr",
+    "pr_state",
+    "pushing",
+)
 
 # Map pane_current_command to friendly process names
 PROCESS_ALIASES: dict[str, str] = {
@@ -314,6 +328,11 @@ def set_metadata(session_name: str, key: str, value: str) -> None:
     _tmux("set-option", "-t", session_name, f"@{key}", value)
 
 
+def _metadata_timestamp() -> str:
+    """Return a UTC timestamp suitable for sortable tmux metadata."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def new_session(
     name: str,
     *,
@@ -429,6 +448,7 @@ def send_text(
     if wait:
         agent = wait_until_session_ready(name, timeout=timeout, interval=interval)
     send_keys(name, text)
+    set_metadata(name, "last_send", _metadata_timestamp())
     return agent
 
 

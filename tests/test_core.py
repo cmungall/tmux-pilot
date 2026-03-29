@@ -347,11 +347,14 @@ class TestPeekAndSend:
         core.new_session(TEST_SESSION)
         assert core.peek_session(TEST_SESSION, lines=10) == ""
 
-    def test_send_and_peek(self, fake_tmux: FakeTmux):
+    def test_send_text_sets_last_send_and_peek(self, fake_tmux: FakeTmux):
         core.new_session(TEST_SESSION)
-        core.send_keys(TEST_SESSION, "echo TMUX_PILOT_TEST_MARKER")
+        core.send_text(TEST_SESSION, "echo TMUX_PILOT_TEST_MARKER")
         output = core.peek_session(TEST_SESSION, lines=20)
         assert "TMUX_PILOT_TEST_MARKER" in output
+        last_send = fake_tmux.sessions[TEST_SESSION]["metadata"]["last_send"]
+        assert isinstance(last_send, str)
+        assert last_send.endswith("Z")
 
     def test_send_uses_literal_text_then_enter(self, fake_tmux: FakeTmux, monkeypatch: pytest.MonkeyPatch):
         sleeps: list[float] = []
@@ -392,6 +395,7 @@ class TestPeekAndSend:
             (TEST_SESSION, True, ["echo waited"]),
             (TEST_SESSION, False, ["Enter"]),
         ]
+        assert fake_tmux.sessions[TEST_SESSION]["metadata"]["last_send"].endswith("Z")
 
 
 class TestWaitForReady:
