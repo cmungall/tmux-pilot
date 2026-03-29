@@ -1,5 +1,0 @@
-0000000000000000000000000000000000000000 b35edcb7f30a677099cfbecae8fb25b1139c5768 Chris Mungall <cjm@berkeleybop.org> 1774738294 -0700	branch: Created from main
-b35edcb7f30a677099cfbecae8fb25b1139c5768 aec4cd0036e8c4ad8cbb88c1d53cbefe73da78e5 Chris Mungall <cjm@berkeleybop.org> 1774738596 -0700	commit: Add project Justfile and dev tooling
-aec4cd0036e8c4ad8cbb88c1d53cbefe73da78e5 e44cc00f3f4874490b2486da46dcf5ad541727ea Chris Mungall <cjm@berkeleybop.org> 1774738818 -0700	commit: Stabilize tests and CI coverage
-e44cc00f3f4874490b2486da46dcf5ad541727ea e0914aea6eb52a74cc28864e30ba6a69c135745f Chris Mungall <cjm@berkeleybop.org> 1774739092 -0700	commit: Add profile-backed session creation
-e0914aea6eb52a74cc28864e30ba6a69c135745f 8e4fcebedcc9864d45f268ab97bea5c8ea459bfc Chris Mungall <cjm@berkeleybop.org> 1774739244 -0700	commit: Add built-in agent status plugins

@@ -35,9 +35,9 @@ def _state_from_output(pane_output: str) -> str:
     return "unknown"
 
 
-def get_state(session_name: str) -> dict[str, str]:
+def get_state(session_name: str, pane_output: str | None = None) -> dict[str, str]:
     """Return Claude Code state derived from recent pane output."""
-    pane_output = core.peek_session(session_name, lines=30)
+    pane_output = pane_output or core.peek_session(session_name, lines=30)
     return {
         "type": "claude-code",
         "state": _state_from_output(pane_output),

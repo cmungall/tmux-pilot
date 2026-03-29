@@ -196,8 +196,9 @@ def list_sessions(
             if branch:
                 info.metadata["branch"] = branch
 
-        agent = _get_agent_state(info.name, info.process)
-        info.agent_state = agent.get("state", "")
+        # Agent state detection is expensive (captures pane output).
+        # Skip in list_sessions; compute on demand in get_session_status.
+        info.agent_state = ""
 
         if status and info.status.lower() != status.lower():
             continue
@@ -517,11 +518,11 @@ def create_profile_session(
     }
 
 
-def _get_agent_state(session_name: str, pane_command: str) -> dict[str, str]:
+def _get_agent_state(session_name: str, pane_command: str, pane_output: str | None = None) -> dict[str, str]:
     """Detect the active agent plugin and return its current state."""
     from .plugins.agents import get_agent_state
 
-    return get_agent_state(session_name, pane_command)
+    return get_agent_state(session_name, pane_command, pane_output=pane_output)
 
 
 DONE_STATUSES = {"done", "complete", "completed", "finished", "merged"}
