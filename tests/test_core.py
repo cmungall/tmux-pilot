@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from tmux_pilot import core
+from tmux_pilot import agent_sessions, core
 from tmux_pilot.cli import main as cli_main
 from tmux_pilot.display import format_session_table, parse_cols
 
@@ -25,6 +25,7 @@ class FakeTmux:
         self.next_pid = 1000
         self.switched_to: str | None = None
         self.attached_to: str | None = None
+        self.send_key_calls: list[tuple[str, bool, list[str]]] = []
 
     def run(
         self,
@@ -51,6 +52,7 @@ class FakeTmux:
                 "pid": str(self.next_pid),
                 "metadata": {},
                 "scrollback": "",
+                "input_buffer": "",
             }
             self.next_pid += 1
             return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
@@ -111,11 +113,28 @@ class FakeTmux:
 
         if command == "send-keys":
             name = args[args.index("-t") + 1]
-            text = args[-2]
-            scrollback = f"$ {text}\n"
-            if text.startswith("echo "):
-                scrollback += text[5:] + "\n"
-            self.sessions[name]["scrollback"] = str(self.sessions[name]["scrollback"]) + scrollback
+            keys = args[args.index("-t") + 2 :]
+            literal = False
+            if keys and keys[0] == "-l":
+                literal = True
+                keys = keys[1:]
+            self.send_key_calls.append((name, literal, list(keys)))
+
+            session = self.sessions[name]
+            if literal:
+                session["input_buffer"] = str(session["input_buffer"]) + "".join(keys)
+                return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
+
+            for key in keys:
+                if key == "Enter":
+                    text = str(session["input_buffer"])
+                    scrollback = f"$ {text}\n"
+                    if text.startswith("echo "):
+                        scrollback += text[5:] + "\n"
+                    session["scrollback"] = str(session["scrollback"]) + scrollback
+                    session["input_buffer"] = ""
+                else:
+                    session["input_buffer"] = str(session["input_buffer"]) + key
             return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
 
         if command == "list-panes":
@@ -226,6 +245,96 @@ class TestPeekAndSend:
         core.send_keys(TEST_SESSION, "echo TMUX_PILOT_TEST_MARKER")
         output = core.peek_session(TEST_SESSION, lines=20)
         assert "TMUX_PILOT_TEST_MARKER" in output
+
+    def test_send_uses_literal_text_then_enter(self, fake_tmux: FakeTmux, monkeypatch: pytest.MonkeyPatch):
+        sleeps: list[float] = []
+        monkeypatch.setattr(core.time, "sleep", lambda seconds: sleeps.append(seconds))
+        core.new_session(TEST_SESSION)
+        core.send_keys(TEST_SESSION, "echo hello")
+        assert fake_tmux.send_key_calls == [
+            (TEST_SESSION, True, ["echo hello"]),
+            (TEST_SESSION, False, ["Enter"]),
+        ]
+        assert sleeps == [core._SEND_KEYS_SETTLE_DELAY]
+
+    def test_send_empty_text_sends_enter_only(self, fake_tmux: FakeTmux, monkeypatch: pytest.MonkeyPatch):
+        sleeps: list[float] = []
+        monkeypatch.setattr(core.time, "sleep", lambda seconds: sleeps.append(seconds))
+        core.new_session(TEST_SESSION)
+        core.send_keys(TEST_SESSION, "")
+        assert fake_tmux.send_key_calls == [
+            (TEST_SESSION, False, ["Enter"]),
+        ]
+        assert sleeps == []
+
+    def test_send_text_waits_before_sending(self, fake_tmux: FakeTmux, monkeypatch: pytest.MonkeyPatch):
+        core.new_session(TEST_SESSION)
+        calls: list[tuple[str, float, float]] = []
+
+        def wait_until_session_ready(name: str, *, timeout: float, interval: float):
+            calls.append((name, timeout, interval))
+            return {"type": "codex", "state": "completed", "ready": True}
+
+        monkeypatch.setattr(core, "wait_until_session_ready", wait_until_session_ready)
+
+        agent = core.send_text(TEST_SESSION, "echo waited", wait=True, timeout=12.5)
+
+        assert calls == [(TEST_SESSION, 12.5, 0.25)]
+        assert agent == {"type": "codex", "state": "completed", "ready": True}
+        assert fake_tmux.send_key_calls == [
+            (TEST_SESSION, True, ["echo waited"]),
+            (TEST_SESSION, False, ["Enter"]),
+        ]
+
+
+class TestWaitForReady:
+    def test_wait_until_session_ready_returns_when_agent_ready(
+        self,
+        fake_tmux: FakeTmux,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        core.new_session(TEST_SESSION, directory="/tmp/example")
+        fake_tmux.sessions[TEST_SESSION]["command"] = "codex"
+        monkeypatch.setattr(core, "peek_session", lambda name, lines=30: "OpenAI Codex")
+        monkeypatch.setattr(agent_sessions, "find_transcript_for_cwd", lambda agent_type, cwd: None)
+
+        states = iter(
+            [
+                {"type": "codex", "state": "running", "ready": False},
+                {"type": "codex", "state": "completed", "ready": True},
+            ]
+        )
+        monkeypatch.setattr(core, "_get_agent_state", lambda *args, **kwargs: next(states))
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(core.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        agent = core.wait_until_session_ready(TEST_SESSION, timeout=1.0, interval=0.1)
+
+        assert agent == {"type": "codex", "state": "completed", "ready": True}
+        assert sleeps == [0.1]
+
+    def test_wait_until_session_ready_times_out(
+        self,
+        fake_tmux: FakeTmux,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        core.new_session(TEST_SESSION, directory="/tmp/example")
+        fake_tmux.sessions[TEST_SESSION]["command"] = "codex"
+        monkeypatch.setattr(core, "peek_session", lambda name, lines=30: "OpenAI Codex")
+        monkeypatch.setattr(agent_sessions, "find_transcript_for_cwd", lambda agent_type, cwd: None)
+        monkeypatch.setattr(
+            core,
+            "_get_agent_state",
+            lambda *args, **kwargs: {"type": "codex", "state": "running", "ready": False},
+        )
+
+        monotonic_values = iter([0.0, 0.2, 0.6])
+        monkeypatch.setattr(core.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(core.time, "sleep", lambda seconds: None)
+
+        with pytest.raises(RuntimeError, match="Timed out waiting for session '_tp_test_session'"):
+            core.wait_until_session_ready(TEST_SESSION, timeout=0.5, interval=0.1)
 
 
 class TestResolveSession:
@@ -469,3 +578,27 @@ class TestCLI:
         cli_main(["ls", "--json", "--status", "active"])
         data = json.loads(capsys.readouterr().out)
         assert [session["name"] for session in data] == [TEST_SESSION]
+
+    def test_send_with_wait(self, monkeypatch: pytest.MonkeyPatch):
+        calls: list[tuple[str, str, bool, float]] = []
+        monkeypatch.setattr(core, "session_exists", lambda name: True)
+
+        def send_text(name: str, text: str, *, wait: bool, timeout: float, interval: float = 0.25):
+            calls.append((name, text, wait, timeout))
+            return {"type": "codex", "state": "completed", "ready": True}
+
+        monkeypatch.setattr(core, "send_text", send_text)
+
+        cli_main(["send", "--wait", "--timeout", "12.0", TEST_SESSION, "hello"])
+
+        assert calls == [(TEST_SESSION, "hello", True, 12.0)]
+
+    def test_send_wait_reports_errors(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(core, "session_exists", lambda name: True)
+        monkeypatch.setattr(core, "send_text", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["send", "--wait", TEST_SESSION, "hello"])
+
+        assert exc_info.value.code == 1
+        assert "boom" in capsys.readouterr().err

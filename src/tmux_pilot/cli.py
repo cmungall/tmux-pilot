@@ -72,7 +72,16 @@ def cmd_send(args: argparse.Namespace) -> None:
     if not core.session_exists(args.name):
         print(f"Session '{args.name}' not found.", file=sys.stderr)
         sys.exit(1)
-    core.send_keys(args.name, args.text)
+    try:
+        core.send_text(
+            args.name,
+            args.text,
+            wait=args.wait,
+            timeout=args.timeout,
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_jump(args: argparse.Namespace) -> None:
@@ -266,6 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_send = sub.add_parser("send", help="Send text + Enter to a session")
     p_send.add_argument("name", help="Session name")
     p_send.add_argument("text", help="Text to send")
+    p_send.add_argument("--wait", action="store_true", help="Wait for the agent to become ready before sending")
+    p_send.add_argument("--timeout", type=float, default=30.0, help="Seconds to wait with --wait (default: 30)")
 
     # jump
     p_jump = sub.add_parser("jump", help="Attach/switch to a session (fzf picker if no name)")

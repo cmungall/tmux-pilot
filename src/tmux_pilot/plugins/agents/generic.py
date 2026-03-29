@@ -39,10 +39,19 @@ def _state_from_output(pane_output: str) -> str:
     return "unknown"
 
 
-def get_state(session_name: str, pane_output: str | None = None) -> dict[str, str]:
+def get_state(
+    session_name: str,
+    pane_output: str | None = None,
+    *,
+    working_dir: str = "",
+    transcript_path=None,
+) -> dict[str, str | bool]:
     """Return fallback agent state using configurable prompt/completion regexes."""
+    del working_dir, transcript_path
     pane_output = pane_output or core.peek_session(session_name, lines=30)
+    state = _state_from_output(pane_output)
     return {
         "type": "generic",
-        "state": _state_from_output(pane_output),
+        "state": state,
+        "ready": state in {"idle", "completed"},
     }

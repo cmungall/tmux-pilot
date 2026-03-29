@@ -1,0 +1,312 @@
+"""Helpers for file-backed agent session state."""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+_TRANSCRIPT_SCAN_LIMIT = 200
+_HEAD_SCAN_LINES = 8
+_READ_CHUNK_SIZE = 8192
+
+
+@dataclass(frozen=True)
+class TranscriptState:
+    """Latest lifecycle state derived from an agent transcript file."""
+
+    path: Path
+    state: str
+    timestamp: str = ""
+    turn_id: str = ""
+
+
+def codex_sessions_root() -> Path:
+    """Return the Codex sessions directory."""
+    codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    return codex_home / "sessions"
+
+
+def claude_projects_root() -> Path:
+    """Return the Claude Code transcript directory."""
+    return Path(os.environ.get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")).expanduser()
+
+
+def _normalize_cwd(cwd: str) -> str:
+    if not cwd:
+        return ""
+    try:
+        return str(Path(cwd).expanduser().resolve())
+    except OSError:
+        return str(Path(cwd).expanduser())
+
+
+def _load_json_line(line: str) -> dict | None:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_cwd(record: dict) -> str:
+    cwd = record.get("cwd")
+    if isinstance(cwd, str):
+        return cwd
+
+    record_type = record.get("type")
+    payload = record.get("payload")
+    if record_type not in {"session_meta", "turn_context"} or not isinstance(payload, dict):
+        return ""
+    cwd = payload.get("cwd")
+    return cwd if isinstance(cwd, str) else ""
+
+
+def _recent_jsonl_files(root: Path, *, limit: int = _TRANSCRIPT_SCAN_LIMIT) -> list[Path]:
+    if not root.exists():
+        return []
+
+    candidates: list[tuple[float, Path]] = []
+    for path in root.rglob("*.jsonl"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, path))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in candidates[:limit]]
+
+
+def transcript_cwd(path: Path, *, max_lines: int = _HEAD_SCAN_LINES) -> str:
+    """Read the transcript cwd from the first few JSONL records."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for index, line in enumerate(handle):
+                if index >= max_lines:
+                    break
+                record = _load_json_line(line)
+                if record is None:
+                    continue
+                cwd = _extract_cwd(record)
+                if cwd:
+                    return _normalize_cwd(cwd)
+    except OSError:
+        return ""
+    return ""
+
+
+def find_codex_transcript_for_cwd(
+    cwd: str,
+    *,
+    root: Path | None = None,
+    limit: int = _TRANSCRIPT_SCAN_LIMIT,
+) -> Path | None:
+    """Return the most recent Codex transcript whose cwd matches *cwd*."""
+    target = _normalize_cwd(cwd)
+    if not target:
+        return None
+
+    sessions_root = root or codex_sessions_root()
+    for path in _recent_jsonl_files(sessions_root, limit=limit):
+        if transcript_cwd(path) == target:
+            return path
+    return None
+
+
+def find_claude_transcript_for_cwd(
+    cwd: str,
+    *,
+    root: Path | None = None,
+    limit: int = _TRANSCRIPT_SCAN_LIMIT,
+) -> Path | None:
+    """Return the most recent Claude transcript whose cwd matches *cwd*."""
+    target = _normalize_cwd(cwd)
+    if not target:
+        return None
+
+    projects_root = root or claude_projects_root()
+    for path in _recent_jsonl_files(projects_root, limit=limit):
+        if transcript_cwd(path) == target:
+            return path
+    return None
+
+
+def find_transcript_for_cwd(
+    agent_type: str,
+    cwd: str,
+    *,
+    limit: int = _TRANSCRIPT_SCAN_LIMIT,
+) -> Path | None:
+    """Return the latest transcript path for a supported agent session."""
+    if agent_type == "codex":
+        return find_codex_transcript_for_cwd(cwd, limit=limit)
+    if agent_type == "claude-code":
+        return find_claude_transcript_for_cwd(cwd, limit=limit)
+    return None
+
+
+def _iter_lines_reverse(path: Path):
+    """Yield file lines from end to start without loading the whole file."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            buffer = b""
+
+            while position > 0:
+                read_size = min(_READ_CHUNK_SIZE, position)
+                position -= read_size
+                handle.seek(position)
+                buffer = handle.read(read_size) + buffer
+                lines = buffer.splitlines()
+                if position > 0:
+                    buffer = lines[0]
+                    lines = lines[1:]
+                else:
+                    buffer = b""
+
+                for line in reversed(lines):
+                    yield line.decode("utf-8", errors="replace")
+
+            if buffer:
+                yield buffer.decode("utf-8", errors="replace")
+    except OSError:
+        return
+
+
+def read_codex_transcript_state(path: Path) -> TranscriptState | None:
+    """Return the latest Codex lifecycle event from *path*."""
+    for line in _iter_lines_reverse(path):
+        record = _load_json_line(line)
+        if record is None or record.get("type") != "event_msg":
+            continue
+
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+
+        event_type = payload.get("type")
+        if not isinstance(event_type, str):
+            continue
+
+        timestamp = record.get("timestamp")
+        turn_id = payload.get("turn_id")
+        if event_type == "task_complete":
+            return TranscriptState(
+                path=path,
+                state="completed",
+                timestamp=timestamp if isinstance(timestamp, str) else "",
+                turn_id=turn_id if isinstance(turn_id, str) else "",
+            )
+        if event_type == "task_started":
+            return TranscriptState(
+                path=path,
+                state="running",
+                timestamp=timestamp if isinstance(timestamp, str) else "",
+                turn_id=turn_id if isinstance(turn_id, str) else "",
+            )
+        if event_type == "turn_aborted":
+            reason = payload.get("reason")
+            return TranscriptState(
+                path=path,
+                state="interrupted" if reason == "interrupted" else "error",
+                timestamp=timestamp if isinstance(timestamp, str) else "",
+                turn_id=turn_id if isinstance(turn_id, str) else "",
+            )
+    return None
+
+
+def _record_timestamp(record: dict) -> str:
+    timestamp = record.get("timestamp")
+    return timestamp if isinstance(timestamp, str) else ""
+
+
+def _record_turn_id(record: dict) -> str:
+    for key in ("uuid", "turn_id", "sessionId"):
+        value = record.get(key)
+        if isinstance(value, str):
+            return value
+
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        value = payload.get("turn_id")
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _claude_assistant_state(record: dict) -> str | None:
+    if record.get("type") != "assistant":
+        return None
+
+    message = record.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return None
+
+    content = message.get("content")
+    if not isinstance(content, list):
+        return "completed"
+    if any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content):
+        return "running"
+    return "completed"
+
+
+def _claude_user_state(record: dict) -> str | None:
+    if record.get("type") != "user":
+        return None
+
+    message = record.get("message")
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return None
+    return "running"
+
+
+def read_claude_transcript_state(path: Path) -> TranscriptState | None:
+    """Return the latest Claude Code lifecycle state from *path*."""
+    for line in _iter_lines_reverse(path):
+        record = _load_json_line(line)
+        if record is None:
+            continue
+
+        state = _claude_assistant_state(record) or _claude_user_state(record)
+        if state is None:
+            continue
+
+        return TranscriptState(
+            path=path,
+            state=state,
+            timestamp=_record_timestamp(record),
+            turn_id=_record_turn_id(record),
+        )
+    return None
+
+
+def get_codex_transcript_state(
+    cwd: str,
+    *,
+    transcript_path: Path | None = None,
+    root: Path | None = None,
+) -> TranscriptState | None:
+    """Resolve and read the latest Codex transcript state for *cwd*."""
+    path = transcript_path or find_codex_transcript_for_cwd(cwd, root=root)
+    if path is None:
+        return None
+    return read_codex_transcript_state(path)
+
+
+def get_claude_transcript_state(
+    cwd: str,
+    *,
+    transcript_path: Path | None = None,
+    root: Path | None = None,
+) -> TranscriptState | None:
+    """Resolve and read the latest Claude Code transcript state for *cwd*."""
+    path = transcript_path or find_claude_transcript_for_cwd(cwd, root=root)
+    if path is None:
+        return None
+    return read_claude_transcript_state(path)
