@@ -44,6 +44,15 @@ tp status auth-flow
 tp kill auth-flow
 ```
 
+## Docs
+
+Detailed documentation lives under [`docs/`](./docs/README.md) and is organized using Diataxis:
+
+- tutorial: [`docs/tutorials/drive-a-kept-alive-agent-session.md`](./docs/tutorials/drive-a-kept-alive-agent-session.md)
+- how-to: [`docs/how-to/wait-for-interactive-agents.md`](./docs/how-to/wait-for-interactive-agents.md)
+- explanation: [`docs/explanation/file-backed-agent-state.md`](./docs/explanation/file-backed-agent-state.md)
+- reference: [`docs/reference/agent-state.md`](./docs/reference/agent-state.md)
+
 ## Commands
 
 ### `tp ls` — List sessions
@@ -62,9 +71,15 @@ tp ls --json --status active   # combine filters with JSON
 ```bash
 tp new NAME                    # bare session
 tp new NAME -c ~/repos/myapp   # set working directory + @repo
+tp new NAME --agent codex      # plain tmux session, then launch codex
+tp new NAME --agent codex --prompt "1+3"
 tp new NAME -d "description"   # set @desc metadata
 tp new NAME -c DIR -d DESC     # both
+tp new NAME --profile default --issue 123
+tp new NAME --profile default --agent codex --prompt "Write tests"
 ```
+
+`--agent` is the command to launch inside the new tmux session, for example `claude`, `claude-code`, or `codex`. Without `--profile`, `tp new ... --agent ...` creates a plain tmux session and launches that command there. Use `--profile default` if you want profile/worktree behavior and also want to override the default agent. Put persistent flags such as `--profile yolo --no-alt-screen` in `agent_args` inside `~/.config/tmux-pilot/profiles.toml`.
 
 ### `tp peek` — View scrollback without attaching
 
@@ -77,6 +92,7 @@ tp peek NAME -n 100            # last 100 lines
 
 ```bash
 tp send NAME "any command"     # sends text + Enter
+tp send --wait NAME "follow-up instruction"
 tp send NAME "claude-code --print 'fix the auth bug'"
 ```
 

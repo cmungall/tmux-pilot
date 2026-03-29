@@ -11,6 +11,38 @@ from pathlib import Path
 from . import core, display, hooks
 
 
+_NEW_DESCRIPTION = """Create a tmux session.
+
+Plain mode creates a detached tmux session with optional working directory and description.
+It can also launch an agent command directly in that session with --agent and optionally send an
+initial prompt with --prompt.
+
+Profile mode creates a git worktree from ~/.config/tmux-pilot/profiles.toml, records repo/branch
+metadata, optionally launches an agent command, and can send an initial prompt. Profile mode is
+used when you pass --profile, --issue, --repo, or --no-agent. If a [default] profile exists, plain
+`tp new NAME` also uses profile mode automatically unless you force plain mode with --directory or
+an explicit --agent.
+"""
+
+
+_NEW_EPILOG = """Examples:
+  tp new scratch -c ~/repos/myapp
+  tp new foo-codex-test --agent codex --prompt "1+3"
+  tp new review-771 --profile dismech --issue 771
+  tp new codex-fix --profile default --agent codex --prompt "Write tests for the parser"
+
+Agent values are shell commands, not fixed enums. Use the executable you would launch inside tmux.
+Common values: claude, claude-code, codex
+
+Put stable flags in profiles.toml as agent_args, for example:
+  agent = "codex"
+  agent_args = "--profile yolo --no-alt-screen"
+
+Use --profile default if you want worktree/profile behavior and also want to override the default
+agent or send an initial prompt.
+"""
+
+
 def cmd_ls(args: argparse.Namespace) -> None:
     sessions = core.list_sessions(
         status=args.status,
@@ -38,6 +70,7 @@ def cmd_new(args: argparse.Namespace) -> None:
             repo=args.repo,
             no_agent=args.no_agent,
             prompt=args.prompt,
+            directory=args.directory,
         ):
             if args.directory:
                 raise RuntimeError("--directory is not supported with profile-based sessions; use --repo")
@@ -52,7 +85,11 @@ def cmd_new(args: argparse.Namespace) -> None:
                 desc=args.desc,
             )
         else:
+            if args.prompt and not args.agent:
+                raise RuntimeError("--prompt requires --agent in plain mode; use --profile to send a prompt via a profile agent")
             core.new_session(args.name, directory=args.directory, desc=args.desc)
+            if args.agent:
+                core.launch_agent_session(args.name, args.agent, prompt=args.prompt)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
@@ -72,7 +109,16 @@ def cmd_send(args: argparse.Namespace) -> None:
     if not core.session_exists(args.name):
         print(f"Session '{args.name}' not found.", file=sys.stderr)
         sys.exit(1)
-    core.send_keys(args.name, args.text)
+    try:
+        core.send_text(
+            args.name,
+            args.text,
+            wait=args.wait,
+            timeout=args.timeout,
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_jump(args: argparse.Namespace) -> None:
@@ -246,16 +292,46 @@ def build_parser() -> argparse.ArgumentParser:
     p_ls.add_argument("--process", help="Filter by process (e.g. claude-code, python)")
 
     # new
-    p_new = sub.add_parser("new", help="Create a new session")
+    p_new = sub.add_parser(
+        "new",
+        help="Create a bare session or a profile-backed worktree session",
+        description=_NEW_DESCRIPTION,
+        epilog=_NEW_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_new.add_argument("name", help="Session name")
-    p_new.add_argument("--profile", help="Named profile from ~/.config/tmux-pilot/profiles.toml")
-    p_new.add_argument("--issue", type=int, help="GitHub issue number to derive metadata from")
-    p_new.add_argument("--agent", help="Override the profile's agent")
-    p_new.add_argument("--repo", help="Override the profile's repository")
-    p_new.add_argument("--no-agent", action="store_true", help="Create the session without launching an agent")
-    p_new.add_argument("--prompt", help="Initial prompt to send to the agent after startup")
-    p_new.add_argument("-c", "--directory", help="Working directory")
-    p_new.add_argument("-d", "--desc", help="Description")
+    p_new.add_argument(
+        "--profile",
+        help="Profile name from ~/.config/tmux-pilot/profiles.toml; supplies repo, agent, worktree base, and branch prefix",
+    )
+    p_new.add_argument(
+        "--issue",
+        type=int,
+        help="GitHub issue number for profile mode; uses the issue title as the description and names the branch like fix/123-name",
+    )
+    p_new.add_argument(
+        "--agent",
+        help="Agent command to launch after session creation, e.g. claude, claude-code, or codex",
+    )
+    p_new.add_argument(
+        "--repo",
+        help="Local repository path override for profile mode; use this instead of --directory",
+    )
+    p_new.add_argument(
+        "--no-agent",
+        action="store_true",
+        help="Create the profile-based worktree/session without launching the configured agent",
+    )
+    p_new.add_argument(
+        "--prompt",
+        help="Initial prompt to send after launching the agent; in plain mode this requires --agent",
+    )
+    p_new.add_argument(
+        "-c",
+        "--directory",
+        help="Working directory for plain mode only; not supported with profile mode",
+    )
+    p_new.add_argument("-d", "--desc", help="Description stored as @desc metadata")
 
     # peek
     p_peek = sub.add_parser("peek", help="Show last N lines of scrollback")
@@ -266,6 +342,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_send = sub.add_parser("send", help="Send text + Enter to a session")
     p_send.add_argument("name", help="Session name")
     p_send.add_argument("text", help="Text to send")
+    p_send.add_argument("--wait", action="store_true", help="Wait for the agent to become ready before sending")
+    p_send.add_argument("--timeout", type=float, default=30.0, help="Seconds to wait with --wait (default: 30)")
 
     # jump
     p_jump = sub.add_parser("jump", help="Attach/switch to a session (fzf picker if no name)")

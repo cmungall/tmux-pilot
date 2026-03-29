@@ -43,9 +43,8 @@ def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monke
     )
     git_calls: list[tuple[list[str], str]] = []
     metadata_calls: list[tuple[str, str, str]] = []
-    send_calls: list[tuple[str, str]] = []
+    launch_calls: list[tuple[str, str, str | None, str]] = []
     new_calls: list[tuple[str, str | None, str | None]] = []
-    sleep_calls: list[int] = []
 
     monkeypatch.setattr(core, "resolve_session_profile", lambda *args, **kwargs: profile)
     monkeypatch.setattr(core, "_fetch_issue_title", lambda repo_path, issue_number: "Review Wilson")
@@ -56,8 +55,11 @@ def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monke
         lambda name, *, directory=None, desc=None: new_calls.append((name, directory, desc)),
     )
     monkeypatch.setattr(core, "set_metadata", lambda *args: metadata_calls.append(args))
-    monkeypatch.setattr(core, "send_keys", lambda session_name, text: send_calls.append((session_name, text)))
-    monkeypatch.setattr(core.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(
+        core,
+        "launch_agent_session",
+        lambda session_name, agent, *, prompt=None, agent_args="": launch_calls.append((session_name, agent, prompt, agent_args)),
+    )
 
     result = core.create_profile_session(
         "review-wilson",
@@ -80,11 +82,9 @@ def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monke
         ("review-wilson", "status", "active"),
         ("review-wilson", "desc", "Review Wilson"),
     ]
-    assert send_calls == [
-        ("review-wilson", "codex --profile yolo"),
-        ("review-wilson", "Summarize the issue and propose a fix."),
+    assert launch_calls == [
+        ("review-wilson", "codex", "Summarize the issue and propose a fix.", "--profile yolo"),
     ]
-    assert sleep_calls == [5]
     assert result["branch"] == "fix/771-review-wilson"
     assert result["worktree"] == str(worktree_dir)
 
