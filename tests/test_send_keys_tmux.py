@@ -123,6 +123,26 @@ def launch_mock_codex(session_name: str, workdir: Path) -> None:
     wait_for_output(session_name, "Press enter")
 
 
+def wait_for_mock_codex_prompt(session_name: str, *, timeout: float = 3.0) -> str:
+    """Accept the trust prompt and wait until the normal Codex prompt is ready."""
+    output = ""
+
+    def has_prompt() -> bool:
+        nonlocal output
+        output = core.peek_session(session_name, lines=200)
+        if "gpt-5.4 xhigh" in output:
+            return True
+        if "Press enter" in output:
+            core.send_keys(session_name, "1")
+        return False
+
+    try:
+        wait_for(has_prompt, timeout=timeout, message="timed out waiting for mock Codex prompt")
+    except AssertionError as exc:
+        raise AssertionError(f"{exc}\nLast tmux output:\n{output}") from exc
+    return output
+
+
 def launch_mock_claude(session_name: str, workdir: Path) -> None:
     command = f"{shlex.quote(sys.executable)} -u {shlex.quote(str(MOCK_CLAUDE))}"
     core._run(
@@ -177,8 +197,7 @@ def test_cli_send_wait_uses_codex_transcript_state_with_real_tmux(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     launch_mock_codex(session, tmp_path)
 
-    core.send_keys(session, "1")
-    wait_for_output(session, "gpt-5.4 xhigh")
+    wait_for_mock_codex_prompt(session)
 
     status = core.get_session_status(session)
     assert status["agent"]["type"] == "codex"
