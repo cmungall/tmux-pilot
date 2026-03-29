@@ -1,8 +1,27 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 dist/
 *.egg-info/
 .eggs/
-demo.cast
+.mypy_cache/
+.ruff_cache/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build
+build/
+
+# Sandbox artifacts (codex/agent generated)
 .git-sandbox/
+
+# Project specific
+demo.cast
+
+# OS
+.DS_Store
