@@ -36,17 +36,20 @@ def cmd_new(args: argparse.Namespace) -> None:
             issue=args.issue,
             agent=args.agent,
             repo=args.repo,
+            branch=args.branch,
+            base_ref=args.base_ref,
             no_agent=args.no_agent,
             prompt=args.prompt,
         ):
-            if args.directory:
-                raise RuntimeError("--directory is not supported with profile-based sessions; use --repo")
             core.create_profile_session(
                 args.name,
                 profile_name=args.profile,
                 issue=args.issue,
                 agent=args.agent,
                 repo=args.repo,
+                directory=args.directory,
+                branch=args.branch,
+                base_ref=args.base_ref,
                 no_agent=args.no_agent,
                 prompt=args.prompt,
                 desc=args.desc,
@@ -259,11 +262,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_new.add_argument("name", help="Session name")
     p_new.add_argument("--profile", help="Named profile from ~/.config/tmux-pilot/profiles.toml")
     p_new.add_argument("--issue", type=int, help="GitHub issue number to derive metadata from")
-    p_new.add_argument("--agent", help="Override the profile's agent")
-    p_new.add_argument("--repo", help="Override the profile's repository")
+    p_new.add_argument("--agent", help="Override the profile's agent command")
+    p_new.add_argument("--repo", help="Bootstrap from a local repo path or GitHub owner/repo[/url]")
+    p_new.add_argument("--branch", help="Override the derived task branch name")
+    p_new.add_argument("--base-ref", help="Override the base ref used when creating a task worktree")
     p_new.add_argument("--no-agent", action="store_true", help="Create the session without launching an agent")
     p_new.add_argument("--prompt", help="Initial prompt to send to the agent after startup")
-    p_new.add_argument("-c", "--directory", help="Working directory")
+    p_new.add_argument("-c", "--directory", help="Working directory for a non-bootstrap session")
     p_new.add_argument("-d", "--desc", help="Description")
 
     # peek

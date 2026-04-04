@@ -22,11 +22,14 @@ uv tool install tmux-pilot
 ## Quick Start
 
 ```bash
-# Spin up a session for a feature branch
-tp new auth-flow -c ~/repos/myapp -d "Implement OAuth2 login"
+# Start Codex in the current repo with the built-in `codex` profile
+tp new auth-flow --profile codex -c ~/repos/myapp
 
-# Launch Claude Code inside it
-tp send auth-flow "claude-code"
+# Bootstrap a task branch + worktree from a local repo, then launch Claude Code
+tp new oauth-fix --profile claude --repo ~/repos/myapp -d "Fix OAuth callback handling"
+
+# Bootstrap from GitHub if the repo is not cloned locally yet
+tp new pi-smoke --profile pi --repo badlogic/pi-mono
 
 # Check on all your sessions
 tp ls
@@ -73,7 +76,57 @@ tp new NAME                    # bare session
 tp new NAME -c ~/repos/myapp   # set working directory + @repo
 tp new NAME -d "description"   # set @desc metadata
 tp new NAME -c DIR -d DESC     # both
+
+# Launch a built-in agent profile in-place
+tp new NAME --profile codex -c ~/repos/myapp
+
+# Bootstrap a task branch + worktree from a repo, then launch the profile
+tp new NAME --profile claude --repo ~/repos/myapp
+
+# `--repo` accepts a local path, GitHub owner/repo, or GitHub URL
+tp new NAME --profile pi --repo badlogic/pi-mono
+tp new NAME --profile pi --repo https://github.com/badlogic/pi-mono.git
+
+# Override branch/base selection when needed
+tp new NAME --profile codex --repo ~/repos/myapp --branch chore/name-cleanup
+tp new NAME --profile codex --repo ~/repos/myapp --base-ref origin/release/1.2
 ```
+
+When `--repo` is used, `tp new` now handles the full task bootstrap flow:
+
+- resolves or clones the repo
+- derives a task branch from the session name (or `--issue`)
+- creates a git worktree under the configured worktree base
+- starts the requested agent inside that worktree
+
+Built-in launch profiles:
+
+- `codex`: `codex --profile yolo`
+- `claude`: `claude --permission-mode bypassPermissions`
+- `pi`: `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+
+Recommended profile config lives at `~/.config/tmux-pilot/profiles.toml`:
+
+```toml
+[default]
+extends = "codex"
+worktree_base = "~/worktrees"
+clone_base = "~/repos"
+
+[profiles.claude]
+worktree_base = "~/worktrees"
+
+[profiles.pi]
+branch_prefix = "task"
+
+[profiles.myapp]
+extends = "codex"
+repo = "~/repos/myapp"
+branch_prefix = "feat"
+base_ref = "origin/main"
+```
+
+`extends` can target another configured profile or one of the built-in profiles above. Config values override the inherited profile, so you can keep reusable agent defaults separate from repo-specific task defaults.
 
 ### `tp peek` — View scrollback without attaching
 

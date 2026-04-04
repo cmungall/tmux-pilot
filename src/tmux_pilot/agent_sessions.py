@@ -33,6 +33,12 @@ def claude_projects_root() -> Path:
     return Path(os.environ.get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")).expanduser()
 
 
+def pi_sessions_root() -> Path:
+    """Return the Pi sessions directory."""
+    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent")).expanduser()
+    return agent_dir / "sessions"
+
+
 def _normalize_cwd(cwd: str) -> str:
     if not cwd:
         return ""
@@ -136,6 +142,47 @@ def find_claude_transcript_for_cwd(
     return None
 
 
+def _pi_encoded_session_dir(cwd: str) -> str:
+    normalized = _normalize_cwd(cwd)
+    safe = normalized.lstrip("/\\").replace("/", "-").replace("\\", "-").replace(":", "-")
+    return f"--{safe}--"
+
+
+def _pi_candidate_roots(cwd: str, *, root: Path | None = None) -> list[Path]:
+    if root is not None:
+        return [root]
+
+    target = _normalize_cwd(cwd)
+    if not target:
+        return [pi_sessions_root()]
+
+    worktree_root = Path(target) / ".tmux-pilot" / "pi" / "sessions"
+    default_root = pi_sessions_root() / _pi_encoded_session_dir(target)
+    roots = []
+    if worktree_root.exists():
+        roots.append(worktree_root)
+    roots.append(default_root)
+    return roots
+
+
+def find_pi_transcript_for_cwd(
+    cwd: str,
+    *,
+    root: Path | None = None,
+    limit: int = _TRANSCRIPT_SCAN_LIMIT,
+) -> Path | None:
+    """Return the most recent Pi session file whose cwd matches *cwd*."""
+    target = _normalize_cwd(cwd)
+    if not target:
+        return None
+
+    for sessions_root in _pi_candidate_roots(target, root=root):
+        for path in _recent_jsonl_files(sessions_root, limit=limit):
+            if transcript_cwd(path) == target:
+                return path
+    return None
+
+
 def find_transcript_for_cwd(
     agent_type: str,
     cwd: str,
@@ -147,6 +194,8 @@ def find_transcript_for_cwd(
         return find_codex_transcript_for_cwd(cwd, limit=limit)
     if agent_type == "claude-code":
         return find_claude_transcript_for_cwd(cwd, limit=limit)
+    if agent_type == "pi":
+        return find_pi_transcript_for_cwd(cwd, limit=limit)
     return None
 
 
@@ -227,7 +276,7 @@ def _record_timestamp(record: dict) -> str:
 
 
 def _record_turn_id(record: dict) -> str:
-    for key in ("uuid", "turn_id", "sessionId"):
+    for key in ("id", "uuid", "turn_id", "sessionId"):
         value = record.get(key)
         if isinstance(value, str):
             return value
@@ -286,6 +335,50 @@ def read_claude_transcript_state(path: Path) -> TranscriptState | None:
     return None
 
 
+def _pi_message_state(record: dict) -> str | None:
+    if record.get("type") != "message":
+        return None
+
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return None
+
+    role = message.get("role")
+    if role in {"user", "toolResult", "bashExecution"}:
+        return "running"
+    if role != "assistant":
+        return None
+
+    stop_reason = message.get("stopReason")
+    if stop_reason == "toolUse":
+        return "running"
+    if stop_reason == "aborted":
+        return "interrupted"
+    if stop_reason == "error":
+        return "error"
+    return "completed"
+
+
+def read_pi_transcript_state(path: Path) -> TranscriptState | None:
+    """Return the latest Pi lifecycle state from *path*."""
+    for line in _iter_lines_reverse(path):
+        record = _load_json_line(line)
+        if record is None:
+            continue
+
+        state = _pi_message_state(record)
+        if state is None:
+            continue
+
+        return TranscriptState(
+            path=path,
+            state=state,
+            timestamp=_record_timestamp(record),
+            turn_id=_record_turn_id(record),
+        )
+    return None
+
+
 def get_codex_transcript_state(
     cwd: str,
     *,
@@ -310,3 +403,16 @@ def get_claude_transcript_state(
     if path is None:
         return None
     return read_claude_transcript_state(path)
+
+
+def get_pi_transcript_state(
+    cwd: str,
+    *,
+    transcript_path: Path | None = None,
+    root: Path | None = None,
+) -> TranscriptState | None:
+    """Resolve and read the latest Pi session state for *cwd*."""
+    path = transcript_path or find_pi_transcript_for_cwd(cwd, root=root)
+    if path is None:
+        return None
+    return read_pi_transcript_state(path)

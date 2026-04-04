@@ -195,3 +195,60 @@ def test_get_claude_transcript_state_resolves_path_from_cwd(tmp_path: Path):
         timestamp="2026-03-29T20:00:09Z",
         turn_id="msg-9",
     )
+
+
+def test_find_pi_transcript_for_cwd_uses_worktree_session_dir(tmp_path: Path):
+    worktree = tmp_path / "worktree"
+    session_dir = worktree / ".tmux-pilot" / "pi" / "sessions"
+    transcript = session_dir / "session.jsonl"
+    _write(
+        transcript,
+        [
+            f'{{"type":"session","version":3,"id":"pi-1","timestamp":"2026-03-29T20:00:00Z","cwd":"{worktree}"}}\n',
+            '{"type":"message","id":"msg-1","parentId":null,"timestamp":"2026-03-29T20:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}\n',
+        ],
+    )
+
+    found = agent_sessions.find_pi_transcript_for_cwd(str(worktree))
+
+    assert found == transcript
+
+
+def test_read_pi_transcript_state_reports_running_from_tool_use(tmp_path: Path):
+    transcript = tmp_path / "sessions" / "pi.jsonl"
+    _write(
+        transcript,
+        [
+            '{"type":"session","version":3,"id":"pi-1","timestamp":"2026-03-29T20:00:00Z","cwd":"/tmp/project"}\n',
+            '{"type":"message","id":"msg-1","parentId":null,"timestamp":"2026-03-29T20:00:01Z","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tool-1","arguments":{"command":"pwd"}}],"stopReason":"toolUse"}}\n',
+        ],
+    )
+
+    state = agent_sessions.read_pi_transcript_state(transcript)
+
+    assert state == agent_sessions.TranscriptState(
+        path=transcript,
+        state="running",
+        timestamp="2026-03-29T20:00:01Z",
+        turn_id="msg-1",
+    )
+
+
+def test_read_pi_transcript_state_reports_completed_from_assistant_stop(tmp_path: Path):
+    transcript = tmp_path / "sessions" / "pi.jsonl"
+    _write(
+        transcript,
+        [
+            '{"type":"session","version":3,"id":"pi-1","timestamp":"2026-03-29T20:00:00Z","cwd":"/tmp/project"}\n',
+            '{"type":"message","id":"msg-2","parentId":null,"timestamp":"2026-03-29T20:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}\n',
+        ],
+    )
+
+    state = agent_sessions.read_pi_transcript_state(transcript)
+
+    assert state == agent_sessions.TranscriptState(
+        path=transcript,
+        state="completed",
+        timestamp="2026-03-29T20:00:03Z",
+        turn_id="msg-2",
+    )

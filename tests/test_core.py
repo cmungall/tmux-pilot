@@ -217,6 +217,15 @@ class TestSessionLifecycle:
         session = core.list_sessions()[0]
         assert session.desc == "meta test"
 
+    def test_list_sessions_detects_pi_process_from_pid(self, fake_tmux: FakeTmux, monkeypatch: pytest.MonkeyPatch):
+        core.new_session(TEST_SESSION)
+        fake_tmux.sessions[TEST_SESSION]["command"] = "node"
+        monkeypatch.setattr(core, "_process_command_line", lambda pane_pid="": "pi")
+
+        session = core.list_sessions()[0]
+
+        assert session.process == "pi"
+
 
 class TestMetadata:
     def test_set_and_get(self, fake_tmux: FakeTmux):

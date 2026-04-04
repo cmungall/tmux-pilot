@@ -48,6 +48,13 @@ Readiness is slightly stricter than state:
 
 `CLAUDE_PROJECTS_DIR` is primarily useful for tests or nonstandard layouts. Claude Code itself normally writes under `~/.claude/projects`.
 
+### Pi
+
+- default transcript root: `~/.pi/agent/sessions/--<cwd>--`
+- configurable root: `PI_CODING_AGENT_DIR/sessions/--<cwd>--`
+- built-in `tp` profile root: `{worktree}/.tmux-pilot/pi/sessions`
+- session matching: tmux pane working directory to session header `cwd`
+
 ## Agent-specific behavior
 
 ### `codex`
@@ -63,6 +70,18 @@ State comes from the latest meaningful Claude transcript entry:
 - assistant message with plain text completion => `completed`
 
 `tp` then confirms that the Claude prompt has returned in the pane before it marks the session ready.
+
+### `pi`
+
+Pi uses a mix of pane heuristics and session-file state:
+
+- assistant `stopReason=toolUse` => `running`
+- user, tool result, or bash execution entries => `running`
+- assistant `stopReason=stop` => `completed`
+- assistant `stopReason=aborted` => `interrupted`
+- assistant `stopReason=error` => `error`
+
+If no session file is available yet, `tp` falls back to the visible Pi footer and command palette prompt markers in the pane.
 
 ### Generic agents
 

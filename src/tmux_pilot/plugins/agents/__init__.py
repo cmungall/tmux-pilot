@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import claude_code, codex, generic
+from . import claude_code, codex, generic, pi
 from ... import core
 
-_PLUGINS = (claude_code, codex, generic)
+_PLUGINS = (claude_code, codex, pi, generic)
 
 
 def get_agent_state(
