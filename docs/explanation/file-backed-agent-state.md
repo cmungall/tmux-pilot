@@ -39,3 +39,12 @@ This is the key merge:
 ## Fallback behavior
 
 For agents without a file-backed plugin, `tp` falls back to pane heuristics only. That keeps `tp` broadly usable while allowing higher-confidence behavior for supported interactive agents.
+
+## Operational conclusions
+
+Real-world use has clarified a few product boundaries:
+
+- `tp new --agent "codex --profile yolo --no-alt-screen"` plus `tp send --wait` is a meaningful improvement over the older one-shot send model.
+- Codex trust prompts are normal in brand-new repos and worktrees. They should be treated as an explicit product state, not hand-waved away as a transient glitch.
+- Session metadata alone is not enough to trust launch correctness. `tp` must verify the live pane cwd before and immediately after agent launch, because a shell or agent can drift away from the requested directory while metadata still looks correct.
+- Low-level setup commands and first-class worktree-aware creation are still missing features. When users need them, that should be recorded as a blocker or roadmap item rather than normalized as a permanent shell-script workaround.

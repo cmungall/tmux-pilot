@@ -22,11 +22,26 @@ uv tool install tmux-pilot
 ## Quick Start
 
 ```bash
-# Spin up a session for a feature branch
-tp new auth-flow -c ~/repos/myapp -d "Implement OAuth2 login"
+# Start Codex in an existing checkout.
+# tmux-pilot runs: codex --profile yolo
+tp new auth-flow --profile codex -c ~/repos/myapp
 
-# Launch Claude Code inside it
-tp send auth-flow "claude-code"
+# Start Claude Code in an existing checkout.
+# tmux-pilot runs: claude --permission-mode bypassPermissions
+tp new review-pass --profile claude -c ~/repos/myapp
+
+# Start Pi in an existing checkout.
+# tmux-pilot runs: pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions
+tp new pi-local --profile pi -c ~/repos/pi-mono
+
+# Bootstrap a task branch + worktree from a local repo, then launch Codex there.
+# Default branch: feat/oauth-fix
+# Default worktree: ~/worktrees/myapp-oauth-fix
+tp new oauth-fix --profile codex --repo ~/repos/myapp -d "Fix OAuth callback handling"
+
+# Bootstrap from GitHub if the repo is not cloned locally yet.
+# The repo is cloned to ~/repos/pi-mono first, then a worktree is created.
+tp new pi-smoke --profile pi --repo badlogic/pi-mono
 
 # Check on all your sessions
 tp ls
@@ -49,9 +64,12 @@ tp kill auth-flow
 Detailed documentation lives under [`docs/`](./docs/README.md) and is organized using Diataxis:
 
 - tutorial: [`docs/tutorials/drive-a-kept-alive-agent-session.md`](./docs/tutorials/drive-a-kept-alive-agent-session.md)
+- how-to: [`docs/how-to/create-sessions.md`](./docs/how-to/create-sessions.md)
 - how-to: [`docs/how-to/wait-for-interactive-agents.md`](./docs/how-to/wait-for-interactive-agents.md)
+- how-to: [`docs/how-to/start-task-sessions-with-profiles-and-worktrees.md`](./docs/how-to/start-task-sessions-with-profiles-and-worktrees.md)
 - explanation: [`docs/explanation/file-backed-agent-state.md`](./docs/explanation/file-backed-agent-state.md)
 - reference: [`docs/reference/agent-state.md`](./docs/reference/agent-state.md)
+- reference: [`docs/reference/session-creation.md`](./docs/reference/session-creation.md)
 
 ## Commands
 
@@ -71,8 +89,114 @@ tp ls --json --status active   # combine filters with JSON
 ```bash
 tp new NAME                    # bare session
 tp new NAME -c ~/repos/myapp   # set working directory + @repo
+tp new -c ~/repos/myapp        # infer session name from the directory
+tp new NAME --here             # use cwd and infer repo/branch/worktree metadata
+tp new --here                  # infer the session name from cwd/worktree
+tp new NAME --here -j          # create, then auto-jump into the session
 tp new NAME -d "description"   # set @desc metadata
 tp new NAME -c DIR -d DESC     # both
+
+# Launch a built-in agent profile in-place
+tp new NAME --profile codex -c ~/repos/myapp
+
+# Bootstrap a task branch + worktree from a repo, then launch the profile
+tp new NAME --profile claude --repo ~/repos/myapp
+
+# `--repo` accepts a local path, GitHub owner/repo, or GitHub URL
+tp new NAME --profile pi --repo badlogic/pi-mono
+tp new NAME --profile pi --repo https://github.com/badlogic/pi-mono.git
+
+# Override branch/base selection when needed
+tp new NAME --profile codex --repo ~/repos/myapp --branch chore/name-cleanup
+tp new NAME --profile codex --repo ~/repos/myapp --base-ref origin/release/1.2
+```
+
+Concrete profile examples:
+
+```bash
+# Launches `codex --profile yolo` in ~/repos/myapp
+tp new auth-pass --profile codex -c ~/repos/myapp
+
+# Launches `claude --permission-mode bypassPermissions` in ~/repos/myapp
+tp new review-pass --profile claude -c ~/repos/myapp
+
+# Launches `pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
+tp new pi-local --profile pi -c ~/repos/pi-mono
+```
+
+When `--repo` is used, `tp new` now handles the full task bootstrap flow:
+
+- resolves or clones the repo
+- derives a task branch from the session name (or `--issue`)
+- creates a git worktree under the configured worktree base
+- starts the requested agent inside that worktree
+
+Concrete bootstrap examples:
+
+```bash
+# Creates branch `feat/oauth-fix`, worktree `~/worktrees/myapp-oauth-fix`,
+# then launches `codex --profile yolo` inside that worktree.
+tp new oauth-fix --profile codex --repo ~/repos/myapp
+
+# Creates branch `fix/771-issue-771`, fetches the issue title for @desc,
+# then launches `claude --permission-mode bypassPermissions`.
+tp new issue-771 --profile claude --repo ~/repos/myapp --issue 771
+
+# If ~/repos/pi-mono does not exist yet, clone it first.
+# Then create branch `feat/pi-smoke`, worktree `~/worktrees/pi-mono-pi-smoke`,
+# and launch Pi with a worktree-local session dir.
+tp new pi-smoke --profile pi --repo badlogic/pi-mono
+
+# Pin the branch name or starting point when needed.
+tp new cleanup --profile codex --repo ~/repos/myapp --branch chore/cleanup
+tp new backport --profile codex --repo ~/repos/myapp --base-ref origin/release/1.2
+```
+
+Built-in launch profiles:
+
+- `codex`: `codex --profile yolo`
+- `claude`: `claude --permission-mode bypassPermissions`
+- `pi`: `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+
+Recommended profile config lives at `~/.config/tmux-pilot/profiles.toml`:
+
+```toml
+[default]
+extends = "codex"
+worktree_base = "~/worktrees"
+clone_base = "~/repos"
+
+[profiles.pi]
+extends = "pi"
+branch_prefix = "task"
+
+[profiles.myapp]
+extends = "codex"
+repo = "~/repos/myapp"
+branch_prefix = "feat"
+base_ref = "origin/main"
+```
+
+`extends` can target another configured profile or one of the built-in profiles above. Config values override the inherited profile, so you can keep reusable agent defaults separate from repo-specific task defaults.
+
+For interactive Codex sessions, `codex --profile yolo --no-alt-screen` plus `tp send --wait` is the current best-supported flow. Brand-new repos and worktrees can still stop at a Codex trust prompt before normal readiness begins. `tp` now verifies the tmux pane cwd before and immediately after agent launch and fails loudly if the shell or agent drifts out of the requested directory.
+
+`--here` is plain-mode only. It uses your current working directory as the session directory, records inferred git metadata such as repo root, current branch, and whether the checkout is a linked worktree, and can infer the session name from that directory when you omit `NAME`. If that inferred name already exists, `tp new` auto-suffixes it as `-1`, `-2`, and so on. `-j/--jump` attaches or switches to the new session immediately after creation.
+
+Concrete config-driven examples:
+
+```bash
+# Uses `[default]`, so this launches `codex --profile yolo`
+# even though no `--profile` flag was passed.
+tp new rename-types -c ~/repos/myapp
+
+# Uses the repo/base branch from `[profiles.myapp]`,
+# so `--repo ~/repos/myapp` is not needed here.
+tp new api-cleanup --profile myapp
+
+# Uses the customized Pi profile, so the derived branch is `task/pi-smoke`
+# instead of the default `feat/pi-smoke`.
+tp new pi-smoke --profile pi --repo badlogic/pi-mono
 ```
 
 ### `tp peek` — View scrollback without attaching

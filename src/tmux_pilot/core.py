@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -22,6 +23,7 @@ METADATA_KEYS = ("repo", "task", "desc", "status", "origin", "branch", "needs", 
 PROCESS_ALIASES: dict[str, str] = {
     "claude": "claude-code",
     "codex": "codex",
+    "pi": "pi",
     "python": "python",
     "zsh": "zsh",
     "bash": "bash",
@@ -38,8 +40,30 @@ NODE_DISAMBIGUATION: dict[str, str] = {
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 PROFILE_CONFIG_PATH = Path.home() / ".config" / "tmux-pilot" / "profiles.toml"
+_DEFAULT_CLONE_BASE = "~/repos"
 _DEFAULT_WORKTREE_BASE = "~/worktrees"
 _SEND_KEYS_SETTLE_DELAY = 0.1
+_CWD_VERIFY_TIMEOUT = 2.0
+_CWD_VERIFY_INTERVAL = 0.05
+_PI_SESSION_DIR_TEMPLATE = "{worktree}/.tmux-pilot/pi/sessions"
+_BUILTIN_PROFILE_DEFS: dict[str, dict[str, object]] = {
+    "codex": {
+        "command": ["codex", "--profile", "yolo"],
+        "prompt_wait_timeout": 10.0,
+    },
+    "claude": {
+        "command": ["claude", "--permission-mode", "bypassPermissions"],
+        "prompt_wait_timeout": 10.0,
+    },
+    "pi": {
+        "command": ["pi", "--session-dir", _PI_SESSION_DIR_TEMPLATE],
+        "prompt_wait_timeout": 5.0,
+    },
+}
+_GITHUB_REPO_RE = re.compile(
+    r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/|github\.com/)?"
+    r"(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?/?$"
+)
 
 
 @dataclass
@@ -47,11 +71,24 @@ class SessionProfile:
     """Resolved project profile for `tp new --profile`."""
 
     name: str
+    extends: str = ""
     repo: str = ""
     agent: str = ""
     agent_args: str = ""
+    command: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
+    clone_base: str = _DEFAULT_CLONE_BASE
     worktree_base: str = _DEFAULT_WORKTREE_BASE
     branch_prefix: str = ""
+    base_ref: str = ""
+    prompt_wait_timeout: float = 10.0
+
+    @property
+    def command_parts(self) -> tuple[str, ...]:
+        if self.command:
+            return self.command
+        parts = [self.agent.strip(), *shlex.split(self.agent_args)]
+        return tuple(part for part in parts if part)
 
 
 def _run(
@@ -88,17 +125,70 @@ def tmux_running() -> bool:
     return result.returncode == 0
 
 
-def _detect_process(pane_cmd: str, session_name: str = "") -> str:
+def _child_pids(pid: str) -> list[str]:
+    """Return child process IDs for *pid*."""
+    if not pid:
+        return []
+    result = _run(["pgrep", "-P", pid], check=False, timeout=3)
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _raw_process_command_line(pid: str = "") -> str:
+    if not pid:
+        return ""
+    result = _run(["ps", "-o", "command=", "-p", pid], check=False, timeout=3)
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _process_command_line(pane_pid: str = "") -> str:
+    """Return the foreground-ish command line for a pane."""
+    current_pid = pane_pid
+    command_line = _raw_process_command_line(current_pid)
+
+    while command_line:
+        base = Path(command_line.split()[0]).name.lower().lstrip("-")
+        if base not in {"zsh", "bash", "fish", "sh"}:
+            return command_line
+
+        children = _child_pids(current_pid)
+        if not children:
+            return command_line
+        current_pid = children[-1]
+        command_line = _raw_process_command_line(current_pid)
+
+    return ""
+
+
+def _detect_process(pane_cmd: str, session_name: str = "", pane_pid: str = "") -> str:
     """Map a pane_current_command to a friendly name."""
     cmd = pane_cmd.strip()
     # Claude Code reports its version number as the command (e.g. "2.1.76")
     if _VERSION_RE.match(cmd):
         return "claude-code"
     cmd_lower = cmd.lower()
+    shell_cmd = cmd_lower.lstrip("-")
+    child_cmd = _process_command_line(pane_pid).lower()
+    if shell_cmd in {"zsh", "bash", "fish", "sh"} and child_cmd and child_cmd != cmd_lower:
+        for key, alias in PROCESS_ALIASES.items():
+            if key in child_cmd:
+                return alias
+        for key, alias in NODE_DISAMBIGUATION.items():
+            if key in child_cmd:
+                return alias
     # "node" is ambiguous — both Claude Code and Codex run as node.
     # For tp ls (fast path): use session name / @task hints.
     # For tp status (slow path): inspect child process command line.
     if cmd_lower == "node":
+        for key, alias in PROCESS_ALIASES.items():
+            if key in child_cmd:
+                return alias
+        for key, alias in NODE_DISAMBIGUATION.items():
+            if key in child_cmd:
+                return alias
         name_lower = session_name.lower()
         for key, alias in NODE_DISAMBIGUATION.items():
             if key in name_lower:
@@ -119,6 +209,7 @@ class SessionInfo:
     name: str
     process: str = "unknown"
     working_dir: str = ""
+    pid: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
     agent_state: str = ""
 
@@ -146,26 +237,27 @@ class SessionInfo:
 
 
 _META_FMT = "\t".join(f"#{{@{k}}}" for k in METADATA_KEYS)
-_SESSION_FMT = f"#{{session_name}}\t#{{pane_current_command}}\t#{{pane_current_path}}\t{_META_FMT}"
+_SESSION_FMT = f"#{{session_name}}\t#{{pane_current_command}}\t#{{pane_current_path}}\t#{{pane_pid}}\t{_META_FMT}"
 
 
 def _parse_session_line(line: str) -> SessionInfo | None:
     """Parse a single tab-separated tmux format line into a SessionInfo."""
     parts = line.split("\t")
-    if len(parts) < 3:
+    if len(parts) < 4:
         return None
 
-    name, pane_cmd, pane_path = parts[0], parts[1], parts[2]
+    name, pane_cmd, pane_path, pane_pid = parts[0], parts[1], parts[2], parts[3]
     meta = {}
     for i, key in enumerate(METADATA_KEYS):
-        val = parts[3 + i] if (3 + i) < len(parts) else ""
+        val = parts[4 + i] if (4 + i) < len(parts) else ""
         if val:
             meta[key] = val
 
     return SessionInfo(
         name=name,
-        process=_detect_process(pane_cmd, name),
+        process=_detect_process(pane_cmd, name, pane_pid),
         working_dir=pane_path,
+        pid=pane_pid,
         metadata=meta,
     )
 
@@ -227,12 +319,15 @@ def new_session(
     *,
     directory: str | None = None,
     desc: str | None = None,
+    command: str | None = None,
 ) -> None:
     """Create a new detached tmux session with optional metadata."""
     cmd = ["tmux", "new-session", "-d", "-s", name]
     if directory:
         p = Path(directory).expanduser().resolve()
         cmd.extend(["-c", str(p)])
+    if command:
+        cmd.append(command)
     _run(cmd, check=True)
 
     if desc:
@@ -244,6 +339,69 @@ def new_session(
 def peek_session(name: str, lines: int = 50, timeout: int = 3) -> str:
     """Capture last N lines of scrollback from a session without attaching."""
     return _tmux("capture-pane", "-t", name, "-p", "-S", f"-{lines}", check=True, timeout=timeout)
+
+
+def _normalize_directory(path: str) -> str:
+    """Resolve a working directory path for stable comparisons."""
+    if not path:
+        return ""
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        return str(Path(path).expanduser())
+
+
+def _pane_current_path(session_name: str) -> str:
+    """Return the tmux pane's current working directory."""
+    return _tmux("display-message", "-t", session_name, "-p", "#{pane_current_path}", check=False)
+
+
+def _wait_for_pane_path(
+    session_name: str,
+    expected_cwd: str,
+    *,
+    timeout: float = _CWD_VERIFY_TIMEOUT,
+    interval: float = _CWD_VERIFY_INTERVAL,
+) -> str:
+    """Poll until the pane cwd matches *expected_cwd*, returning the last observed path."""
+    expected = _normalize_directory(expected_cwd)
+    deadline = time.monotonic() + timeout
+    current = _pane_current_path(session_name)
+    while _normalize_directory(current) != expected and time.monotonic() < deadline:
+        time.sleep(interval)
+        current = _pane_current_path(session_name)
+    return current
+
+
+def _ensure_session_cwd(session_name: str, expected_cwd: str) -> str:
+    """Repair a drifted shell cwd before launching an agent."""
+    expected = _normalize_directory(expected_cwd)
+    current = _pane_current_path(session_name)
+    if _normalize_directory(current) == expected:
+        return expected
+
+    send_keys(session_name, f"cd {shlex.quote(expected)}")
+    current = _wait_for_pane_path(session_name, expected)
+    if _normalize_directory(current) != expected:
+        current_display = current or "<unknown>"
+        raise RuntimeError(
+            f"Session '{session_name}' pane cwd is '{current_display}', expected '{expected}'. "
+            "tmux-pilot will not launch the agent until the pane is in the requested directory."
+        )
+    return expected
+
+
+def _verify_session_cwd_after_launch(session_name: str, expected_cwd: str) -> str:
+    """Fail loudly if the launched agent leaves the requested cwd immediately."""
+    expected = _normalize_directory(expected_cwd)
+    current = _wait_for_pane_path(session_name, expected)
+    if _normalize_directory(current) != expected:
+        current_display = current or "<unknown>"
+        raise RuntimeError(
+            f"Session '{session_name}' pane cwd changed to '{current_display}' after launching the agent; "
+            f"expected '{expected}'."
+        )
+    return expected
 
 
 def send_keys(name: str, text: str) -> None:
@@ -285,14 +443,20 @@ def session_exists(name: str) -> bool:
     return result.returncode == 0
 
 
+def _exec_tmux_attach(target: str) -> None:
+    """Replace the current process with `tmux attach-session`."""
+    os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+
+
 def _attach_or_switch(target: str) -> None:
     """Attach or switch to a session by exact name."""
     if _is_inside_tmux():
         _tmux("switch-client", "-t", target)
     else:
-        result = _run(["tmux", "attach-session", "-t", target], check=False, capture=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to attach to session '{target}'")
+        try:
+            _exec_tmux_attach(target)
+        except OSError as exc:
+            raise RuntimeError(f"Failed to attach to session '{target}'") from exc
 
 
 def _resolve_session(name: str) -> str:
@@ -358,26 +522,108 @@ def _is_inside_tmux() -> bool:
     return "TMUX" in os.environ
 
 
-def load_profiles(path: Path | None = None) -> dict[str, SessionProfile]:
-    """Load configured session profiles from TOML."""
-    config_path = path or PROFILE_CONFIG_PATH
+def _load_profile_tables(config_path: Path) -> dict[str, dict[str, object]]:
     if not config_path.exists():
         return {}
 
     with config_path.open("rb") as handle:
         data = tomllib.load(handle)
 
+    if not isinstance(data, dict):
+        return {}
+
+    if isinstance(data.get("profiles"), dict):
+        source = data["profiles"]
+        tables = {name: values for name, values in source.items() if isinstance(values, dict)}
+        default_values = data.get("default")
+        if isinstance(default_values, dict) and "default" not in tables:
+            tables["default"] = default_values
+        return tables
+
+    return {name: values for name, values in data.items() if isinstance(values, dict)}
+
+
+def _resolve_profile_values(
+    name: str,
+    raw_profiles: dict[str, dict[str, object]],
+    *,
+    stack: tuple[str, ...] = (),
+) -> dict[str, object]:
+    if name in stack:
+        cycle = " -> ".join((*stack, name))
+        raise RuntimeError(f"Cyclic profile inheritance detected: {cycle}")
+    if name not in raw_profiles:
+        raise RuntimeError(f"Profile '{name}' not found in {PROFILE_CONFIG_PATH}")
+
+    values = dict(raw_profiles[name])
+    extends = values.get("extends")
+    if isinstance(extends, str) and extends:
+        base = _resolve_profile_values(extends, raw_profiles, stack=(*stack, name))
+        merged = dict(base)
+        merged.update(values)
+        values = merged
+    return values
+
+
+def _normalize_profile_command(values: dict[str, object]) -> tuple[str, ...]:
+    command = values.get("command")
+    if isinstance(command, str):
+        return tuple(shlex.split(command))
+    if isinstance(command, list):
+        return tuple(str(item) for item in command if str(item).strip())
+    if isinstance(command, tuple):
+        return tuple(str(item) for item in command if str(item).strip())
+
+    agent = str(values.get("agent", "")).strip()
+    agent_args = str(values.get("agent_args", "")).strip()
+    if not agent:
+        return ()
+    return tuple(part for part in (agent, *shlex.split(agent_args)) if part)
+
+
+def _normalize_profile_env(values: dict[str, object]) -> dict[str, str]:
+    env = values.get("env")
+    if not isinstance(env, dict):
+        return {}
+    return {str(key): str(value) for key, value in env.items()}
+
+
+def _command_to_agent_fields(command: tuple[str, ...]) -> tuple[str, str]:
+    if not command:
+        return "", ""
+    return command[0], " ".join(command[1:])
+
+
+def load_profiles(path: Path | None = None) -> dict[str, SessionProfile]:
+    """Load configured session profiles from TOML."""
+    config_path = path or PROFILE_CONFIG_PATH
+    raw_profiles = {name: dict(values) for name, values in _BUILTIN_PROFILE_DEFS.items()}
+    for name, values in _load_profile_tables(config_path).items():
+        if name in raw_profiles:
+            merged = dict(raw_profiles[name])
+            merged.update(values)
+            raw_profiles[name] = merged
+        else:
+            raw_profiles[name] = dict(values)
+
     profiles: dict[str, SessionProfile] = {}
-    for name, values in data.items():
-        if not isinstance(values, dict):
-            continue
+    for name in raw_profiles:
+        values = _resolve_profile_values(name, raw_profiles)
+        command = _normalize_profile_command(values)
+        agent, agent_args = _command_to_agent_fields(command)
         profiles[name] = SessionProfile(
             name=name,
+            extends=str(values.get("extends", "")),
             repo=str(values.get("repo", "")),
-            agent=str(values.get("agent", "")),
-            agent_args=str(values.get("agent_args", "")),
+            agent=agent,
+            agent_args=agent_args,
+            command=command,
+            env=_normalize_profile_env(values),
+            clone_base=str(values.get("clone_base", _DEFAULT_CLONE_BASE)),
             worktree_base=str(values.get("worktree_base", _DEFAULT_WORKTREE_BASE)),
             branch_prefix=str(values.get("branch_prefix", "")),
+            base_ref=str(values.get("base_ref", "")),
+            prompt_wait_timeout=float(values.get("prompt_wait_timeout", 10.0)),
         )
     return profiles
 
@@ -388,14 +634,25 @@ def should_use_profile_mode(
     issue: int | None = None,
     agent: str | None = None,
     repo: str | None = None,
+    branch: str | None = None,
+    base_ref: str | None = None,
     no_agent: bool = False,
     prompt: str | None = None,
+    directory: str | None = None,
     path: Path | None = None,
 ) -> bool:
     """Return True when `tp new` should use profile-backed creation."""
-    if profile_name or issue is not None or agent or repo or no_agent or prompt:
+    profiles = load_profiles(path)
+
+    if profile_name or issue is not None or repo or branch or base_ref or no_agent:
         return True
-    return "default" in load_profiles(path)
+    if agent:
+        return False
+    if prompt:
+        return "default" in profiles and not directory
+    if directory:
+        return False
+    return "default" in profiles
 
 
 def resolve_session_profile(
@@ -408,7 +665,7 @@ def resolve_session_profile(
 ) -> SessionProfile | None:
     """Resolve a profile, merging explicit settings with `[default]`."""
     profiles = load_profiles(path)
-    if not profiles and not repo_override and not agent_override:
+    if not profile_name and "default" not in profiles and not repo_override and not agent_override:
         return None
 
     if profile_name and profile_name not in profiles:
@@ -417,18 +674,34 @@ def resolve_session_profile(
     selected_name = profile_name or ("default" if "default" in profiles else "")
     default = profiles.get("default", SessionProfile(name="default"))
     selected = profiles.get(selected_name, SessionProfile(name=selected_name or "default"))
+    command = selected.command_parts or default.command_parts
 
     branch_prefix = selected.branch_prefix or default.branch_prefix
     if not branch_prefix:
         branch_prefix = "fix" if issue is not None else "feat"
 
+    agent = selected.agent or default.agent
+    agent_args = selected.agent_args or default.agent_args
+    if agent_override:
+        override_command = tuple(shlex.split(agent_override))
+        if not override_command:
+            raise RuntimeError("Agent override produced an empty command")
+        command = override_command
+        agent, agent_args = _command_to_agent_fields(command)
+
     return SessionProfile(
         name=selected_name or "default",
+        extends=selected.extends or default.extends,
         repo=repo_override or selected.repo or default.repo,
-        agent=agent_override or selected.agent or default.agent,
-        agent_args=selected.agent_args or default.agent_args,
+        agent=agent,
+        agent_args=agent_args,
+        command=command,
+        env=dict(default.env) | dict(selected.env),
+        clone_base=selected.clone_base or default.clone_base or _DEFAULT_CLONE_BASE,
         worktree_base=selected.worktree_base or default.worktree_base or _DEFAULT_WORKTREE_BASE,
         branch_prefix=branch_prefix,
+        base_ref=selected.base_ref or default.base_ref,
+        prompt_wait_timeout=selected.prompt_wait_timeout or default.prompt_wait_timeout or 10.0,
     )
 
 
@@ -473,11 +746,276 @@ def _fetch_issue_title(repo_path: str, issue_number: int) -> str:
     return result.stdout.strip()
 
 
-def _launch_agent(session_name: str, agent: str, agent_args: str = "") -> None:
-    """Launch the configured agent inside the tmux session."""
-    command = " ".join(part for part in (agent.strip(), agent_args.strip()) if part)
-    if command:
-        send_keys(session_name, command)
+def launch_agent_session(
+    session_name: str,
+    command: str,
+    *,
+    prompt: str | None = None,
+    expected_cwd: str | None = None,
+    prompt_timeout: float = 30.0,
+) -> None:
+    """Launch a shell command in a tmux session and optionally send a prompt."""
+    if expected_cwd:
+        _ensure_session_cwd(session_name, expected_cwd)
+    send_keys(session_name, command)
+    if expected_cwd:
+        _verify_session_cwd_after_launch(session_name, expected_cwd)
+    if prompt:
+        send_text(session_name, prompt, wait=True, timeout=prompt_timeout)
+
+
+def _git_root(path: str) -> str:
+    """Return the git root for *path*, or an empty string when not in a repo."""
+    if not path:
+        return ""
+    result = _run(
+        ["git", "-C", path, "rev-parse", "--show-toplevel"],
+        check=False,
+        timeout=3,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def inspect_directory_context(directory: str) -> dict[str, str]:
+    """Inspect a directory and derive git-aware session metadata."""
+    resolved_dir = _normalize_directory(directory)
+    repo_root = _git_root(resolved_dir)
+    branch = _detect_git_branch(resolved_dir) if repo_root else ""
+    origin = ""
+    if repo_root:
+        origin = "git-worktree" if _is_git_worktree(repo_root) else "git-repo"
+
+    return {
+        "directory": resolved_dir,
+        "repo": repo_root or resolved_dir,
+        "branch": branch,
+        "origin": origin,
+    }
+
+
+def infer_session_name_for_directory(directory: str) -> str:
+    """Infer a tmux session name from a directory or its repo/worktree root."""
+    context = inspect_directory_context(directory)
+    raw_name = Path(context["repo"]).name or Path(context["directory"]).name
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip("-")
+    if not name:
+        raise RuntimeError(
+            f"Could not infer a session name from '{context['directory']}'. "
+            "Pass an explicit session name."
+        )
+    return name
+
+
+def uniqueify_session_name(base_name: str) -> str:
+    """Return *base_name* or the next available -N suffixed variant."""
+    if not session_exists(base_name):
+        return base_name
+
+    suffix = 1
+    while True:
+        candidate = f"{base_name}-{suffix}"
+        if not session_exists(candidate):
+            return candidate
+        suffix += 1
+
+
+def apply_directory_metadata(session_name: str, directory: str) -> dict[str, str]:
+    """Set repo/branch/origin metadata for a session from a local directory."""
+    context = inspect_directory_context(directory)
+
+    set_metadata(session_name, "repo", context["repo"])
+    if context["branch"]:
+        set_metadata(session_name, "branch", context["branch"])
+    if context["origin"]:
+        set_metadata(session_name, "origin", context["origin"])
+
+    return context
+
+
+def _parse_github_repo(repo: str) -> tuple[str, str] | None:
+    match = _GITHUB_REPO_RE.match(repo.strip())
+    if not match:
+        return None
+    return match.group("owner"), match.group("repo")
+
+
+def _clone_github_repo(repo: str, *, clone_base: str) -> str:
+    parsed = _parse_github_repo(repo)
+    if parsed is None:
+        raise RuntimeError(f"Unsupported repository source '{repo}'")
+
+    owner, repo_name = parsed
+    clone_root = Path(clone_base).expanduser().resolve()
+    local_path = clone_root / repo_name
+    if local_path.exists():
+        return str(local_path.resolve())
+
+    clone_root.mkdir(parents=True, exist_ok=True)
+    result = _run(
+        ["git", "clone", f"https://github.com/{owner}/{repo_name}.git", str(local_path)],
+        check=False,
+        cwd=str(clone_root),
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"Failed to clone {repo}")
+    return str(local_path.resolve())
+
+
+def _resolve_repo_source(repo: str, *, clone_base: str) -> str:
+    candidate = Path(repo).expanduser()
+    if candidate.exists():
+        return str(candidate.resolve())
+
+    parsed = _parse_github_repo(repo)
+    if parsed is None:
+        raise RuntimeError(f"Repository '{repo}' was not found locally and is not a GitHub repo slug/URL")
+    return _clone_github_repo(repo, clone_base=clone_base)
+
+
+def _detect_base_ref(repo_path: str, configured_base_ref: str = "") -> str:
+    if configured_base_ref:
+        return configured_base_ref
+
+    remote_head = _git(
+        ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        cwd=repo_path,
+        check=False,
+    )
+    if remote_head:
+        return remote_head
+
+    current_branch = _detect_git_branch(repo_path)
+    if current_branch:
+        return current_branch
+    return "HEAD"
+
+
+def _local_branch_exists(repo_path: str, branch: str) -> bool:
+    result = _run(
+        ["git", "-C", repo_path, "show-ref", "--verify", f"refs/heads/{branch}"],
+        check=False,
+        timeout=5,
+    )
+    return result.returncode == 0
+
+
+def _fetch_base_ref(repo_path: str, base_ref: str) -> None:
+    if "/" not in base_ref:
+        return
+    remote = base_ref.split("/", 1)[0]
+    result = _run(["git", "-C", repo_path, "remote", "get-url", remote], check=False, timeout=5)
+    if result.returncode != 0:
+        return
+    _git(["fetch", remote], cwd=repo_path, check=False, timeout=30)
+
+
+def _prepare_worktree(repo_path: str, *, worktree_dir: Path, branch: str, base_ref: str) -> None:
+    if worktree_dir.exists():
+        raise RuntimeError(f"Worktree path already exists: {worktree_dir}")
+
+    if _local_branch_exists(repo_path, branch):
+        _git(["worktree", "add", str(worktree_dir), branch], cwd=repo_path)
+        return
+
+    _fetch_base_ref(repo_path, base_ref)
+    _git(["worktree", "add", "-b", branch, str(worktree_dir), base_ref], cwd=repo_path)
+
+
+class _TemplateDict(dict[str, str]):
+    def __missing__(self, key: str) -> str:  # pragma: no cover - defensive
+        raise RuntimeError(f"Unknown profile template key '{key}'")
+
+
+def _render_profile_value(value: str, context: dict[str, str]) -> str:
+    try:
+        return value.format_map(_TemplateDict(context))
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid profile template '{value}': {exc}") from exc
+
+
+def _profile_context(
+    *,
+    profile: SessionProfile,
+    name: str,
+    working_dir: str,
+    repo_path: str = "",
+    branch: str = "",
+    issue: int | None = None,
+    issue_title: str = "",
+    base_ref: str = "",
+) -> dict[str, str]:
+    profile_root = Path(working_dir) / ".tmux-pilot" / profile.name
+    session_dir = str(profile_root / "sessions")
+    context = {
+        "name": name,
+        "session_name": name,
+        "task_slug": _slugify_branch_component(name),
+        "worktree": working_dir,
+        "repo_path": repo_path,
+        "repo_name": Path(repo_path).name if repo_path else Path(working_dir).name,
+        "branch": branch,
+        "issue": str(issue) if issue is not None else "",
+        "issue_title": issue_title,
+        "base_ref": base_ref,
+        "profile": profile.name,
+        "profile_root": str(profile_root),
+        "session_dir": session_dir,
+    }
+    return context
+
+
+def _render_launch_command(profile: SessionProfile, context: dict[str, str]) -> str:
+    """Render the configured agent command for direct tmux startup."""
+    command_parts = [
+        _render_profile_value(part, context)
+        for part in profile.command_parts
+    ]
+    if not command_parts:
+        return ""
+
+    for key in ("profile_root", "session_dir"):
+        value = context.get(key, "")
+        if value:
+            Path(value).mkdir(parents=True, exist_ok=True)
+
+    env_parts = [
+        f"{key}={shlex.quote(_render_profile_value(value, context))}"
+        for key, value in profile.env.items()
+    ]
+    return " ".join(env_parts + [shlex.quote(part) for part in command_parts])
+
+
+def _initial_prompt_desc(desc: str | None, issue_title: str) -> str | None:
+    return issue_title or desc
+
+
+def _create_bootstrap_workspace(
+    *,
+    profile: SessionProfile,
+    name: str,
+    repo_source: str,
+    issue: int | None = None,
+    branch: str | None = None,
+    base_ref: str | None = None,
+) -> dict[str, str]:
+    repo_path = _resolve_repo_source(repo_source, clone_base=profile.clone_base)
+    worktree_base = Path(profile.worktree_base).expanduser().resolve()
+    worktree_dir = worktree_base / f"{Path(repo_path).name}-{name}"
+
+    branch_name = branch or f"{profile.branch_prefix}/{_slugify_branch_component(name)}"
+    if issue is not None and branch is None:
+        branch_name = f"{profile.branch_prefix}/{issue}-{_slugify_branch_component(name)}"
+
+    resolved_base_ref = _detect_base_ref(repo_path, base_ref or profile.base_ref)
+    _prepare_worktree(repo_path, worktree_dir=worktree_dir, branch=branch_name, base_ref=resolved_base_ref)
+
+    return {
+        "repo": repo_path,
+        "worktree": str(worktree_dir),
+        "branch": branch_name,
+        "base_ref": resolved_base_ref,
+    }
 
 
 def create_profile_session(
@@ -487,12 +1025,15 @@ def create_profile_session(
     issue: int | None = None,
     agent: str | None = None,
     repo: str | None = None,
+    directory: str | None = None,
+    branch: str | None = None,
+    base_ref: str | None = None,
     no_agent: bool = False,
     prompt: str | None = None,
     desc: str | None = None,
     config_path: Path | None = None,
 ) -> dict[str, str]:
-    """Create a worktree-backed tmux session from a resolved profile."""
+    """Create a configured tmux session, optionally bootstrapped from a repo task."""
     profile = resolve_session_profile(
         profile_name,
         issue=issue,
@@ -500,44 +1041,81 @@ def create_profile_session(
         agent_override=agent,
         path=config_path,
     )
-    if profile is None or not profile.repo:
-        raise RuntimeError("No repo configured for profile-based session creation")
+    if profile is None:
+        raise RuntimeError("No profile, agent, or repo bootstrap configuration was resolved")
 
-    repo_path = str(Path(profile.repo).expanduser().resolve())
-    worktree_base = Path(profile.worktree_base).expanduser().resolve()
-    worktree_dir = worktree_base / f"{Path(repo_path).name}-{name}"
+    repo_source = profile.repo
+    if not repo_source and (issue is not None or branch or base_ref):
+        repo_source = _git_root(directory or os.getcwd())
+    if issue is not None and not repo_source:
+        raise RuntimeError("Issue-based sessions require a git repo; pass --repo or run tp from a git checkout")
+    if (branch or base_ref) and not repo_source:
+        raise RuntimeError("Branch/base-ref options require a git repo; pass --repo or run tp from a git checkout")
 
-    branch_slug = _slugify_branch_component(name)
-    branch = f"{profile.branch_prefix}/{branch_slug}"
+    workspace: dict[str, str] = {}
+    working_dir = ""
+    if repo_source:
+        workspace = _create_bootstrap_workspace(
+            profile=profile,
+            name=name,
+            repo_source=repo_source,
+            issue=issue,
+            branch=branch,
+            base_ref=base_ref,
+        )
+        working_dir = workspace["worktree"]
+    else:
+        working_dir = str(Path(directory or os.getcwd()).expanduser().resolve())
+
+    issue_title = ""
     if issue is not None:
-        branch = f"{profile.branch_prefix}/{issue}-{branch_slug}"
+        issue_repo = workspace.get("repo", _git_root(working_dir))
+        if issue_repo:
+            issue_title = _fetch_issue_title(issue_repo, issue)
 
-    issue_title = _fetch_issue_title(repo_path, issue) if issue is not None else ""
+    session_desc = _initial_prompt_desc(desc, issue_title)
+    rendered_command = ""
+    if not no_agent and profile.command_parts:
+        context = _profile_context(
+            profile=profile,
+            name=name,
+            working_dir=working_dir,
+            repo_path=workspace.get("repo", _git_root(working_dir)),
+            branch=workspace.get("branch", _detect_git_branch(working_dir)),
+            issue=issue,
+            issue_title=issue_title,
+            base_ref=workspace.get("base_ref", base_ref or ""),
+        )
+        rendered_command = _render_launch_command(profile, context)
 
-    _git(["fetch", "origin"], cwd=repo_path)
-    _git(
-        ["worktree", "add", "-b", branch, str(worktree_dir), "origin/main"],
-        cwd=repo_path,
-    )
+    new_session(name, directory=working_dir, desc=session_desc)
 
-    new_session(name, directory=str(worktree_dir), desc=issue_title or desc)
-    set_metadata(name, "repo", repo_path)
-    set_metadata(name, "branch", branch)
-    set_metadata(name, "status", "active")
+    repo_path = workspace.get("repo", _git_root(working_dir))
+    branch_name = workspace.get("branch", _detect_git_branch(working_dir))
+    set_metadata(name, "task", name)
+    if repo_path:
+        set_metadata(name, "repo", repo_path)
+    if branch_name:
+        set_metadata(name, "branch", branch_name)
+    if repo_path or profile.command_parts or no_agent:
+        set_metadata(name, "status", "active")
     if issue_title:
         set_metadata(name, "desc", issue_title)
 
-    if not no_agent and profile.agent:
-        _launch_agent(name, profile.agent, profile.agent_args)
-        if prompt:
-            time.sleep(5)
-            send_keys(name, prompt)
+    if rendered_command:
+        launch_agent_session(
+            name,
+            rendered_command,
+            prompt=prompt,
+            expected_cwd=working_dir,
+            prompt_timeout=profile.prompt_wait_timeout,
+        )
 
     return {
         "repo": repo_path,
-        "worktree": str(worktree_dir),
-        "branch": branch,
-        "agent": profile.agent,
+        "worktree": working_dir,
+        "branch": branch_name,
+        "agent": rendered_command or " ".join(profile.command_parts),
         "desc": issue_title or desc or "",
     }
 
@@ -608,8 +1186,8 @@ def wait_until_session_ready(
 
     from . import agent_sessions
 
-    pane_cmd, pane_path, _pane_pid, _meta = _session_pane_details(name)
-    detected_process = _detect_process(pane_cmd, name)
+    pane_cmd, pane_path, pane_pid, _meta = _session_pane_details(name)
+    detected_process = _detect_process(pane_cmd, name, pane_pid)
     transcript_path: Path | None = None
     deadline = time.monotonic() + timeout
 
@@ -755,13 +1333,13 @@ def get_session_status(name: str) -> dict:
     scrollback = peek_session(name, lines=5)
     agent = _get_agent_state(
         name,
-        _detect_process(pane_cmd, name),
+        _detect_process(pane_cmd, name, pane_pid),
         pane_path=pane_path,
     )
 
     return {
         "name": name,
-        "process": _detect_process(pane_cmd, name),
+        "process": _detect_process(pane_cmd, name, pane_pid),
         "pid": pane_pid,
         "working_dir": pane_path,
         "metadata": meta,

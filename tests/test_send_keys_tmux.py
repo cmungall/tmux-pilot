@@ -152,6 +152,44 @@ def launch_mock_claude(session_name: str, workdir: Path) -> None:
     wait_for_output(session_name, "Claude Code mock")
 
 
+def launch_real_pi(session_name: str, workdir: Path, session_dir: Path) -> None:
+    if shutil.which("pi") is None:
+        pytest.skip("pi is required for Pi integration tests")
+
+    command = " ".join(
+        [
+            "PI_OFFLINE=1",
+            "pi",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--session-dir",
+            shlex.quote(str(session_dir)),
+        ]
+    )
+    core._run(
+        ["tmux", "new-session", "-d", "-s", session_name, "-c", str(workdir), command],
+        check=True,
+    )
+    wait_for_output(session_name, "pi v", timeout=8.0)
+
+
+def init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "tmux-pilot"], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tmux-pilot@example.com"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (path / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=path, check=True, capture_output=True, text=True)
+
+
 def test_real_tmux_mock_codex_requires_extra_enter_without_settle_delay(real_tmux: RealTmuxServer, tmp_path: Path):
     session = "mock-codex-no-delay"
     launch_mock_codex(session, tmp_path)
@@ -236,3 +274,61 @@ def test_cli_send_wait_uses_claude_transcript_state_with_real_tmux(
     wait_for(first.exists, timeout=3.0, message="timed out waiting for first.txt")
     wait_for(second.exists, timeout=3.0, message="timed out waiting for second.txt")
     wait_for(lambda: second.read_text() == "beta\n", timeout=3.0, message="timed out waiting for second.txt contents")
+
+
+def test_get_session_status_detects_real_pi(real_tmux: RealTmuxServer, tmp_path: Path):
+    session = "real-pi-status"
+    launch_real_pi(session, tmp_path, tmp_path / "pi-sessions")
+
+    status = core.get_session_status(session)
+
+    assert status["process"] == "pi"
+    assert status["agent"]["type"] == "pi"
+    assert status["agent"]["ready"] is True
+
+
+def test_cli_new_bootstraps_worktree_and_launches_real_pi(
+    real_tmux: RealTmuxServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    if shutil.which("pi") is None:
+        pytest.skip("pi is required for Pi integration tests")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+
+    config = tmp_path / "profiles.toml"
+    worktrees = tmp_path / "worktrees"
+    config.write_text(
+        f"""
+[profiles.pi]
+worktree_base = "{worktrees}"
+branch_prefix = "task"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(core, "PROFILE_CONFIG_PATH", config)
+
+    session = "pi-task"
+    cli_main(["new", session, "--profile", "pi", "--repo", str(repo)])
+
+    expected_worktree = worktrees / f"{repo.name}-{session}"
+    wait_for_output(session, "pi v", timeout=8.0)
+
+    status = core.get_session_status(session)
+
+    assert status["working_dir"] == str(expected_worktree)
+    assert status["process"] == "pi"
+    assert status["agent"]["type"] == "pi"
+    assert status["metadata"]["branch"] == "task/pi-task"
+    assert subprocess.run(
+        ["git", "-C", str(expected_worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == "task/pi-task"
+
+    core.send_keys(session, "/name tmux-pilot-pi")
+    wait_for_output(session, "Session name set: tmux-pilot-pi", timeout=5.0)

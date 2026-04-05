@@ -4,11 +4,40 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from pathlib import Path
 
 from . import core, display, hooks
+
+
+_NEW_DESCRIPTION = """Create a tmux session.
+
+Plain mode creates a detached tmux session with an optional working directory and description.
+It can also launch an agent command directly in that session with --agent and optionally send an
+initial prompt with --prompt. Use --here to root the session in your current folder and copy repo,
+branch, and worktree metadata from that checkout.
+
+Profile mode launches a configured profile in-place with --directory or bootstraps a task worktree
+with --repo. It can derive branches, create worktrees, launch the selected agent command, and send
+an initial prompt once the agent becomes ready.
+"""
+
+
+_NEW_EPILOG = """Examples:
+  tp new scratch -c ~/repos/myapp
+  tp new -c ~/repos/myapp
+  tp new --here
+  tp new scratch --here --jump
+  tp new foo-codex-test --agent codex --prompt "1+3"
+  tp new review-771 --profile dismech --issue 771
+  tp new codex-fix --profile default --agent codex --prompt "Write tests for the parser"
+  tp new cleanup --profile codex --repo ~/repos/myapp --branch chore/cleanup
+
+Agent values are shell commands, not fixed enums. Use the command you would launch inside tmux.
+Common values: claude, claude-code, codex, pi
+"""
 
 
 def cmd_ls(args: argparse.Namespace) -> None:
@@ -26,9 +55,35 @@ def cmd_ls(args: argparse.Namespace) -> None:
 
 
 def cmd_new(args: argparse.Namespace) -> None:
-    if core.session_exists(args.name):
-        print(f"Session '{args.name}' already exists.", file=sys.stderr)
-        sys.exit(1)
+    directory = args.directory
+    used_here = False
+    if args.here:
+        if args.directory:
+            print("--here cannot be combined with --directory", file=sys.stderr)
+            sys.exit(1)
+        directory = os.getcwd()
+        used_here = True
+
+    name = args.name
+    inferred_name = False
+    if not name:
+        if directory:
+            try:
+                name = core.infer_session_name_for_directory(directory)
+                inferred_name = True
+            except RuntimeError as e:
+                print(str(e), file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("Session name is required unless --directory or --here is provided.", file=sys.stderr)
+            sys.exit(1)
+
+    if core.session_exists(name):
+        if inferred_name:
+            name = core.uniqueify_session_name(name)
+        else:
+            print(f"Session '{name}' already exists.", file=sys.stderr)
+            sys.exit(1)
 
     try:
         if core.should_use_profile_mode(
@@ -36,28 +91,51 @@ def cmd_new(args: argparse.Namespace) -> None:
             issue=args.issue,
             agent=args.agent,
             repo=args.repo,
+            branch=args.branch,
+            base_ref=args.base_ref,
             no_agent=args.no_agent,
             prompt=args.prompt,
+            directory=directory,
         ):
-            if args.directory:
-                raise RuntimeError("--directory is not supported with profile-based sessions; use --repo")
+            if used_here:
+                raise RuntimeError("--here is plain-mode only; use --directory or --repo")
             core.create_profile_session(
-                args.name,
+                name,
                 profile_name=args.profile,
                 issue=args.issue,
                 agent=args.agent,
                 repo=args.repo,
+                directory=directory,
+                branch=args.branch,
+                base_ref=args.base_ref,
                 no_agent=args.no_agent,
                 prompt=args.prompt,
                 desc=args.desc,
             )
         else:
-            core.new_session(args.name, directory=args.directory, desc=args.desc)
+            if args.prompt and not args.agent:
+                raise RuntimeError("--prompt requires --agent in plain mode; use --profile to send a prompt via a profile agent")
+            core.new_session(name, directory=directory, desc=args.desc)
+            if used_here and directory:
+                core.apply_directory_metadata(name, directory)
+            if args.agent:
+                core.launch_agent_session(
+                    name,
+                    args.agent,
+                    prompt=args.prompt,
+                    expected_cwd=directory,
+                )
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
 
-    print(f"Created session '{args.name}'")
+    print(f"Created session '{name}'")
+    if args.jump:
+        try:
+            core.jump_session(name)
+        except RuntimeError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
 
 
 def cmd_peek(args: argparse.Namespace) -> None:
@@ -255,16 +333,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_ls.add_argument("--process", help="Filter by process (e.g. claude-code, python)")
 
     # new
-    p_new = sub.add_parser("new", help="Create a new session")
-    p_new.add_argument("name", help="Session name")
+    p_new = sub.add_parser(
+        "new",
+        help="Create a bare session or a profile-backed task session",
+        description=_NEW_DESCRIPTION,
+        epilog=_NEW_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_new.add_argument(
+        "name",
+        nargs="?",
+        help="Session name; optional with --directory or --here, where it defaults to the directory or worktree name",
+    )
     p_new.add_argument("--profile", help="Named profile from ~/.config/tmux-pilot/profiles.toml")
     p_new.add_argument("--issue", type=int, help="GitHub issue number to derive metadata from")
-    p_new.add_argument("--agent", help="Override the profile's agent")
-    p_new.add_argument("--repo", help="Override the profile's repository")
+    p_new.add_argument("--agent", help="Override the profile's agent command or plain-mode launch command")
+    p_new.add_argument("--repo", help="Bootstrap from a local repo path or GitHub owner/repo[/url]")
+    p_new.add_argument("-c", "--directory", help="Working directory for a non-bootstrap session or in-place profile launch")
+    p_new.add_argument("--branch", help="Override the derived task branch name")
+    p_new.add_argument("--base-ref", help="Override the base ref used when creating a task worktree")
     p_new.add_argument("--no-agent", action="store_true", help="Create the session without launching an agent")
     p_new.add_argument("--prompt", help="Initial prompt to send to the agent after startup")
-    p_new.add_argument("-c", "--directory", help="Working directory")
+    p_new.add_argument("--here", action="store_true", help="Plain mode only: use the current directory and infer git metadata from it")
     p_new.add_argument("-d", "--desc", help="Description")
+    p_new.add_argument("-j", "--jump", action="store_true", help="Attach or switch to the new session immediately after creating it")
 
     # peek
     p_peek = sub.add_parser("peek", help="Show last N lines of scrollback")

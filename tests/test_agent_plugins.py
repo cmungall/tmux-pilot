@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tmux_pilot import agent_sessions, core, display
-from tmux_pilot.plugins.agents import claude_code, codex, generic, get_agent_state
+from tmux_pilot.plugins.agents import claude_code, codex, generic, get_agent_state, pi
 
 
 def test_claude_code_detects_version_string():
@@ -184,6 +184,48 @@ def test_generic_uses_prompt_regex(monkeypatch):
     state = generic.get_state("alpha")
 
     assert state == {"type": "generic", "state": "idle", "ready": True}
+
+
+def test_pi_detects_banner_output():
+    assert pi.detect("node", "pi v0.55.3\n/ for commands")
+
+
+def test_pi_reports_idle_from_footer(monkeypatch):
+    pane = """
+pi v0.55.3
+/ for commands
+
+~/tmp/project
+$0.000 (sub) 0.0%/200k (auto)               (anthropic) claude-opus-4-6 • medium
+"""
+    monkeypatch.setattr(core, "peek_session", lambda session_name, lines=200: pane)
+
+    state = pi.get_state("alpha")
+
+    assert state == {"type": "pi", "state": "idle", "ready": True}
+
+
+def test_pi_transcript_running_overrides_idle_pane(monkeypatch):
+    pane = """
+pi v0.55.3
+/ for commands
+
+~/tmp/project
+$0.000 (sub) 0.0%/200k (auto)               (anthropic) claude-opus-4-6 • medium
+"""
+    monkeypatch.setattr(core, "peek_session", lambda session_name, lines=200: pane)
+    monkeypatch.setattr(
+        agent_sessions,
+        "get_pi_transcript_state",
+        lambda cwd, transcript_path=None: agent_sessions.TranscriptState(
+            path=Path("/tmp/pi-session.jsonl"),
+            state="running",
+        ),
+    )
+
+    state = pi.get_state("alpha", working_dir="/tmp/example")
+
+    assert state == {"type": "pi", "state": "running", "ready": False}
 
 
 def test_registry_selects_codex_plugin(monkeypatch):

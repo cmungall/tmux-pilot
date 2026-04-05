@@ -32,6 +32,12 @@ Readiness is slightly stricter than state:
 - `completed` is ready only after the prompt is visibly back
 - `running` is not ready
 
+States that are not first-class yet:
+
+- trust prompt
+- shell idle
+- exited
+
 ## Transcript sources
 
 ### Codex
@@ -47,6 +53,13 @@ Readiness is slightly stricter than state:
 - session matching: tmux pane working directory to transcript `cwd`
 
 `CLAUDE_PROJECTS_DIR` is primarily useful for tests or nonstandard layouts. Claude Code itself normally writes under `~/.claude/projects`.
+
+### Pi
+
+- default transcript root: `~/.pi/agent/sessions/--<cwd>--`
+- configurable root: `PI_CODING_AGENT_DIR/sessions/--<cwd>--`
+- built-in `tp` profile root: `{worktree}/.tmux-pilot/pi/sessions`
+- session matching: tmux pane working directory to session header `cwd`
 
 ## Agent-specific behavior
 
@@ -64,6 +77,23 @@ State comes from the latest meaningful Claude transcript entry:
 
 `tp` then confirms that the Claude prompt has returned in the pane before it marks the session ready.
 
+### `pi`
+
+Pi uses a mix of pane heuristics and session-file state:
+
+- assistant `stopReason=toolUse` => `running`
+- user, tool result, or bash execution entries => `running`
+- assistant `stopReason=stop` => `completed`
+- assistant `stopReason=aborted` => `interrupted`
+- assistant `stopReason=error` => `error`
+
+If no session file is available yet, `tp` falls back to the visible Pi footer and command palette prompt markers in the pane.
+
 ### Generic agents
 
 Generic sessions do not have file-backed state. `tp` uses pane heuristics only.
+
+## Known gaps
+
+- Codex trust prompts in brand-new repos and worktrees are expected, but `tp` does not yet surface a dedicated `trust-prompt` state.
+- `tp send --wait` starts helping once the interactive agent has reached a sendable prompt. It does not auto-accept trust bootstrap.
