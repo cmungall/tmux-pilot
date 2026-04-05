@@ -64,10 +64,12 @@ tp kill auth-flow
 Detailed documentation lives under [`docs/`](./docs/README.md) and is organized using Diataxis:
 
 - tutorial: [`docs/tutorials/drive-a-kept-alive-agent-session.md`](./docs/tutorials/drive-a-kept-alive-agent-session.md)
+- how-to: [`docs/how-to/create-sessions.md`](./docs/how-to/create-sessions.md)
 - how-to: [`docs/how-to/wait-for-interactive-agents.md`](./docs/how-to/wait-for-interactive-agents.md)
 - how-to: [`docs/how-to/start-task-sessions-with-profiles-and-worktrees.md`](./docs/how-to/start-task-sessions-with-profiles-and-worktrees.md)
 - explanation: [`docs/explanation/file-backed-agent-state.md`](./docs/explanation/file-backed-agent-state.md)
 - reference: [`docs/reference/agent-state.md`](./docs/reference/agent-state.md)
+- reference: [`docs/reference/session-creation.md`](./docs/reference/session-creation.md)
 
 ## Commands
 
@@ -87,6 +89,10 @@ tp ls --json --status active   # combine filters with JSON
 ```bash
 tp new NAME                    # bare session
 tp new NAME -c ~/repos/myapp   # set working directory + @repo
+tp new -c ~/repos/myapp        # infer session name from the directory
+tp new NAME --here             # use cwd and infer repo/branch/worktree metadata
+tp new --here                  # infer the session name from cwd/worktree
+tp new NAME --here -j          # create, then auto-jump into the session
 tp new NAME -d "description"   # set @desc metadata
 tp new NAME -c DIR -d DESC     # both
 
@@ -172,6 +178,10 @@ base_ref = "origin/main"
 ```
 
 `extends` can target another configured profile or one of the built-in profiles above. Config values override the inherited profile, so you can keep reusable agent defaults separate from repo-specific task defaults.
+
+For interactive Codex sessions, `codex --profile yolo --no-alt-screen` plus `tp send --wait` is the current best-supported flow. Brand-new repos and worktrees can still stop at a Codex trust prompt before normal readiness begins. `tp` now verifies the tmux pane cwd before and immediately after agent launch and fails loudly if the shell or agent drifts out of the requested directory.
+
+`--here` is plain-mode only. It uses your current working directory as the session directory, records inferred git metadata such as repo root, current branch, and whether the checkout is a linked worktree, and can infer the session name from that directory when you omit `NAME`. If that inferred name already exists, `tp new` auto-suffixes it as `-1`, `-2`, and so on. `-j/--jump` attaches or switches to the new session immediately after creation.
 
 Concrete config-driven examples:
 

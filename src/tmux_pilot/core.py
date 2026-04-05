@@ -43,6 +43,8 @@ PROFILE_CONFIG_PATH = Path.home() / ".config" / "tmux-pilot" / "profiles.toml"
 _DEFAULT_CLONE_BASE = "~/repos"
 _DEFAULT_WORKTREE_BASE = "~/worktrees"
 _SEND_KEYS_SETTLE_DELAY = 0.1
+_CWD_VERIFY_TIMEOUT = 2.0
+_CWD_VERIFY_INTERVAL = 0.05
 _PI_SESSION_DIR_TEMPLATE = "{worktree}/.tmux-pilot/pi/sessions"
 _BUILTIN_PROFILE_DEFS: dict[str, dict[str, object]] = {
     "codex": {
@@ -148,7 +150,7 @@ def _process_command_line(pane_pid: str = "") -> str:
     command_line = _raw_process_command_line(current_pid)
 
     while command_line:
-        base = Path(command_line.split()[0]).name.lower()
+        base = Path(command_line.split()[0]).name.lower().lstrip("-")
         if base not in {"zsh", "bash", "fish", "sh"}:
             return command_line
 
@@ -168,8 +170,9 @@ def _detect_process(pane_cmd: str, session_name: str = "", pane_pid: str = "") -
     if _VERSION_RE.match(cmd):
         return "claude-code"
     cmd_lower = cmd.lower()
+    shell_cmd = cmd_lower.lstrip("-")
     child_cmd = _process_command_line(pane_pid).lower()
-    if cmd_lower in {"zsh", "bash", "fish", "sh"} and child_cmd and child_cmd != cmd_lower:
+    if shell_cmd in {"zsh", "bash", "fish", "sh"} and child_cmd and child_cmd != cmd_lower:
         for key, alias in PROCESS_ALIASES.items():
             if key in child_cmd:
                 return alias
@@ -338,6 +341,69 @@ def peek_session(name: str, lines: int = 50, timeout: int = 3) -> str:
     return _tmux("capture-pane", "-t", name, "-p", "-S", f"-{lines}", check=True, timeout=timeout)
 
 
+def _normalize_directory(path: str) -> str:
+    """Resolve a working directory path for stable comparisons."""
+    if not path:
+        return ""
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        return str(Path(path).expanduser())
+
+
+def _pane_current_path(session_name: str) -> str:
+    """Return the tmux pane's current working directory."""
+    return _tmux("display-message", "-t", session_name, "-p", "#{pane_current_path}", check=False)
+
+
+def _wait_for_pane_path(
+    session_name: str,
+    expected_cwd: str,
+    *,
+    timeout: float = _CWD_VERIFY_TIMEOUT,
+    interval: float = _CWD_VERIFY_INTERVAL,
+) -> str:
+    """Poll until the pane cwd matches *expected_cwd*, returning the last observed path."""
+    expected = _normalize_directory(expected_cwd)
+    deadline = time.monotonic() + timeout
+    current = _pane_current_path(session_name)
+    while _normalize_directory(current) != expected and time.monotonic() < deadline:
+        time.sleep(interval)
+        current = _pane_current_path(session_name)
+    return current
+
+
+def _ensure_session_cwd(session_name: str, expected_cwd: str) -> str:
+    """Repair a drifted shell cwd before launching an agent."""
+    expected = _normalize_directory(expected_cwd)
+    current = _pane_current_path(session_name)
+    if _normalize_directory(current) == expected:
+        return expected
+
+    send_keys(session_name, f"cd {shlex.quote(expected)}")
+    current = _wait_for_pane_path(session_name, expected)
+    if _normalize_directory(current) != expected:
+        current_display = current or "<unknown>"
+        raise RuntimeError(
+            f"Session '{session_name}' pane cwd is '{current_display}', expected '{expected}'. "
+            "tmux-pilot will not launch the agent until the pane is in the requested directory."
+        )
+    return expected
+
+
+def _verify_session_cwd_after_launch(session_name: str, expected_cwd: str) -> str:
+    """Fail loudly if the launched agent leaves the requested cwd immediately."""
+    expected = _normalize_directory(expected_cwd)
+    current = _wait_for_pane_path(session_name, expected)
+    if _normalize_directory(current) != expected:
+        current_display = current or "<unknown>"
+        raise RuntimeError(
+            f"Session '{session_name}' pane cwd changed to '{current_display}' after launching the agent; "
+            f"expected '{expected}'."
+        )
+    return expected
+
+
 def send_keys(name: str, text: str) -> None:
     """Send literal text, then press Enter in a separate tmux call.
 
@@ -377,14 +443,20 @@ def session_exists(name: str) -> bool:
     return result.returncode == 0
 
 
+def _exec_tmux_attach(target: str) -> None:
+    """Replace the current process with `tmux attach-session`."""
+    os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+
+
 def _attach_or_switch(target: str) -> None:
     """Attach or switch to a session by exact name."""
     if _is_inside_tmux():
         _tmux("switch-client", "-t", target)
     else:
-        result = _run(["tmux", "attach-session", "-t", target], check=False, capture=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to attach to session '{target}'")
+        try:
+            _exec_tmux_attach(target)
+        except OSError as exc:
+            raise RuntimeError(f"Failed to attach to session '{target}'") from exc
 
 
 def _resolve_session(name: str) -> str:
@@ -566,12 +638,21 @@ def should_use_profile_mode(
     base_ref: str | None = None,
     no_agent: bool = False,
     prompt: str | None = None,
+    directory: str | None = None,
     path: Path | None = None,
 ) -> bool:
     """Return True when `tp new` should use profile-backed creation."""
-    if profile_name or issue is not None or agent or repo or branch or base_ref or no_agent or prompt:
+    profiles = load_profiles(path)
+
+    if profile_name or issue is not None or repo or branch or base_ref or no_agent:
         return True
-    return "default" in load_profiles(path)
+    if agent:
+        return False
+    if prompt:
+        return "default" in profiles and not directory
+    if directory:
+        return False
+    return "default" in profiles
 
 
 def resolve_session_profile(
@@ -665,6 +746,24 @@ def _fetch_issue_title(repo_path: str, issue_number: int) -> str:
     return result.stdout.strip()
 
 
+def launch_agent_session(
+    session_name: str,
+    command: str,
+    *,
+    prompt: str | None = None,
+    expected_cwd: str | None = None,
+    prompt_timeout: float = 30.0,
+) -> None:
+    """Launch a shell command in a tmux session and optionally send a prompt."""
+    if expected_cwd:
+        _ensure_session_cwd(session_name, expected_cwd)
+    send_keys(session_name, command)
+    if expected_cwd:
+        _verify_session_cwd_after_launch(session_name, expected_cwd)
+    if prompt:
+        send_text(session_name, prompt, wait=True, timeout=prompt_timeout)
+
+
 def _git_root(path: str) -> str:
     """Return the git root for *path*, or an empty string when not in a repo."""
     if not path:
@@ -675,6 +774,62 @@ def _git_root(path: str) -> str:
         timeout=3,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def inspect_directory_context(directory: str) -> dict[str, str]:
+    """Inspect a directory and derive git-aware session metadata."""
+    resolved_dir = _normalize_directory(directory)
+    repo_root = _git_root(resolved_dir)
+    branch = _detect_git_branch(resolved_dir) if repo_root else ""
+    origin = ""
+    if repo_root:
+        origin = "git-worktree" if _is_git_worktree(repo_root) else "git-repo"
+
+    return {
+        "directory": resolved_dir,
+        "repo": repo_root or resolved_dir,
+        "branch": branch,
+        "origin": origin,
+    }
+
+
+def infer_session_name_for_directory(directory: str) -> str:
+    """Infer a tmux session name from a directory or its repo/worktree root."""
+    context = inspect_directory_context(directory)
+    raw_name = Path(context["repo"]).name or Path(context["directory"]).name
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip("-")
+    if not name:
+        raise RuntimeError(
+            f"Could not infer a session name from '{context['directory']}'. "
+            "Pass an explicit session name."
+        )
+    return name
+
+
+def uniqueify_session_name(base_name: str) -> str:
+    """Return *base_name* or the next available -N suffixed variant."""
+    if not session_exists(base_name):
+        return base_name
+
+    suffix = 1
+    while True:
+        candidate = f"{base_name}-{suffix}"
+        if not session_exists(candidate):
+            return candidate
+        suffix += 1
+
+
+def apply_directory_metadata(session_name: str, directory: str) -> dict[str, str]:
+    """Set repo/branch/origin metadata for a session from a local directory."""
+    context = inspect_directory_context(directory)
+
+    set_metadata(session_name, "repo", context["repo"])
+    if context["branch"]:
+        set_metadata(session_name, "branch", context["branch"])
+    if context["origin"]:
+        set_metadata(session_name, "origin", context["origin"])
+
+    return context
 
 
 def _parse_github_repo(repo: str) -> tuple[str, str] | None:
@@ -933,7 +1088,7 @@ def create_profile_session(
         )
         rendered_command = _render_launch_command(profile, context)
 
-    new_session(name, directory=working_dir, desc=session_desc, command=rendered_command or None)
+    new_session(name, directory=working_dir, desc=session_desc)
 
     repo_path = workspace.get("repo", _git_root(working_dir))
     branch_name = workspace.get("branch", _detect_git_branch(working_dir))
@@ -947,9 +1102,14 @@ def create_profile_session(
     if issue_title:
         set_metadata(name, "desc", issue_title)
 
-    if rendered_command and prompt:
-        wait_until_session_ready(name, timeout=profile.prompt_wait_timeout)
-        send_keys(name, prompt)
+    if rendered_command:
+        launch_agent_session(
+            name,
+            rendered_command,
+            prompt=prompt,
+            expected_cwd=working_dir,
+            prompt_timeout=profile.prompt_wait_timeout,
+        )
 
     return {
         "repo": repo_path,

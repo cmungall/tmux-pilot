@@ -32,6 +32,12 @@ Readiness is slightly stricter than state:
 - `completed` is ready only after the prompt is visibly back
 - `running` is not ready
 
+States that are not first-class yet:
+
+- trust prompt
+- shell idle
+- exited
+
 ## Transcript sources
 
 ### Codex
@@ -86,3 +92,8 @@ If no session file is available yet, `tp` falls back to the visible Pi footer an
 ### Generic agents
 
 Generic sessions do not have file-backed state. `tp` uses pane heuristics only.
+
+## Known gaps
+
+- Codex trust prompts in brand-new repos and worktrees are expected, but `tp` does not yet surface a dedicated `trust-prompt` state.
+- `tp send --wait` starts helping once the interactive agent has reached a sendable prompt. It does not auto-accept trust bootstrap.

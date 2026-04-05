@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 
 import pytest
@@ -26,6 +27,8 @@ class FakeTmux:
         self.switched_to: str | None = None
         self.attached_to: str | None = None
         self.send_key_calls: list[tuple[str, bool, list[str]]] = []
+        self.ignore_cd = False
+        self.path_after_commands: dict[str, str] = {}
 
     def run(
         self,
@@ -129,6 +132,13 @@ class FakeTmux:
                 if key == "Enter":
                     text = str(session["input_buffer"])
                     scrollback = f"$ {text}\n"
+                    parts = shlex.split(text) if text else []
+                    if parts and parts[0] == "cd" and len(parts) > 1 and not self.ignore_cd:
+                        session["path"] = parts[1]
+                    for prefix, path in self.path_after_commands.items():
+                        if text == prefix or text.startswith(prefix + " "):
+                            session["path"] = path
+                            break
                     if text.startswith("echo "):
                         scrollback += text[5:] + "\n"
                     session["scrollback"] = str(session["scrollback"]) + scrollback
@@ -226,6 +236,17 @@ class TestSessionLifecycle:
 
         assert session.process == "pi"
 
+    def test_detect_process_follows_login_shell_children(self, monkeypatch: pytest.MonkeyPatch):
+        command_lines = {
+            "1000": "-zsh",
+            "2000": "node /usr/local/bin/pi --session-dir /tmp/pi",
+        }
+
+        monkeypatch.setattr(core, "_raw_process_command_line", lambda pid="": command_lines.get(pid, ""))
+        monkeypatch.setattr(core, "_child_pids", lambda pid: ["2000"] if pid == "1000" else [])
+
+        assert core._detect_process("node", pane_pid="1000") == "pi"
+
 
 class TestMetadata:
     def test_set_and_get(self, fake_tmux: FakeTmux):
@@ -242,6 +263,83 @@ class TestMetadata:
         core.set_metadata(TEST_SESSION, "status", "running")
         core.set_metadata(TEST_SESSION, "status", "done")
         assert core.get_metadata(TEST_SESSION, "status") == "done"
+
+
+class TestDirectoryMetadata:
+    def test_infer_session_name_uses_repo_root(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            core,
+            "inspect_directory_context",
+            lambda directory: {
+                "directory": "/repo/worktree/src",
+                "repo": "/repo/worktree",
+                "branch": "feat/example",
+                "origin": "git-worktree",
+            },
+        )
+
+        assert core.infer_session_name_for_directory("/repo/worktree/src") == "worktree"
+
+    def test_infer_session_name_uses_directory_when_not_in_git(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            core,
+            "inspect_directory_context",
+            lambda directory: {
+                "directory": "/tmp/plain-dir",
+                "repo": "/tmp/plain-dir",
+                "branch": "",
+                "origin": "",
+            },
+        )
+
+        assert core.infer_session_name_for_directory("/tmp/plain-dir") == "plain-dir"
+
+    def test_uniqueify_session_name_adds_numeric_suffix(self, monkeypatch: pytest.MonkeyPatch):
+        existing = {"agentic-trace-analyzer", "agentic-trace-analyzer-1", "agentic-trace-analyzer-2"}
+        monkeypatch.setattr(core, "session_exists", lambda name: name in existing)
+
+        assert core.uniqueify_session_name("agentic-trace-analyzer") == "agentic-trace-analyzer-3"
+
+    def test_apply_directory_metadata_uses_git_context(self, monkeypatch: pytest.MonkeyPatch):
+        metadata_calls: list[tuple[str, str, str]] = []
+
+        monkeypatch.setattr(core, "_git_root", lambda path: "/repo/worktree")
+        monkeypatch.setattr(core, "_detect_git_branch", lambda path: "feat/example")
+        monkeypatch.setattr(core, "_is_git_worktree", lambda path: True)
+        monkeypatch.setattr(core, "set_metadata", lambda session_name, key, value: metadata_calls.append((session_name, key, value)))
+
+        context = core.apply_directory_metadata(TEST_SESSION, "/repo/worktree")
+
+        assert context == {
+            "directory": "/repo/worktree",
+            "repo": "/repo/worktree",
+            "branch": "feat/example",
+            "origin": "git-worktree",
+        }
+        assert metadata_calls == [
+            (TEST_SESSION, "repo", "/repo/worktree"),
+            (TEST_SESSION, "branch", "feat/example"),
+            (TEST_SESSION, "origin", "git-worktree"),
+        ]
+
+    def test_apply_directory_metadata_uses_directory_when_not_in_git(self, monkeypatch: pytest.MonkeyPatch):
+        metadata_calls: list[tuple[str, str, str]] = []
+        expected_dir = core._normalize_directory("/tmp/plain")
+
+        monkeypatch.setattr(core, "_git_root", lambda path: "")
+        monkeypatch.setattr(core, "set_metadata", lambda session_name, key, value: metadata_calls.append((session_name, key, value)))
+
+        context = core.apply_directory_metadata(TEST_SESSION, "/tmp/plain")
+
+        assert context == {
+            "directory": expected_dir,
+            "repo": expected_dir,
+            "branch": "",
+            "origin": "",
+        }
+        assert metadata_calls == [
+            (TEST_SESSION, "repo", expected_dir),
+        ]
 
 
 class TestPeekAndSend:
@@ -365,6 +463,19 @@ class TestResolveSession:
         core.new_session(TEST_SESSION + "_2")
         with pytest.raises(RuntimeError, match="matches multiple"):
             core._resolve_session("_tp_test")
+
+    def test_attach_or_switch_execs_tmux_when_attaching_outside_tmux(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        calls: list[str] = []
+
+        monkeypatch.setattr(core, "_is_inside_tmux", lambda: False)
+        monkeypatch.setattr(core, "_exec_tmux_attach", lambda target: calls.append(target))
+
+        core._attach_or_switch("demo")
+
+        assert calls == ["demo"]
 
 
 class TestStatus:
@@ -611,3 +722,210 @@ class TestCLI:
 
         assert exc_info.value.code == 1
         assert "boom" in capsys.readouterr().err
+
+    def test_new_with_agent_and_prompt_uses_plain_mode(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        new_calls: list[tuple[str, str | None, str | None]] = []
+        launch_calls: list[tuple[str, str, str | None, str | None]] = []
+
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(core, "load_profiles", lambda path=None: {})
+        monkeypatch.setattr(
+            core,
+            "new_session",
+            lambda name, *, directory=None, desc=None, command=None: new_calls.append((name, directory, desc)),
+        )
+        monkeypatch.setattr(
+            core,
+            "launch_agent_session",
+            lambda session_name, command, *, prompt=None, expected_cwd=None, prompt_timeout=30.0: launch_calls.append((session_name, command, prompt, expected_cwd)),
+        )
+        monkeypatch.setattr(
+            core,
+            "create_profile_session",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not use profile mode")),
+        )
+
+        cli_main(["new", "foo-codex-test-4", "--agent", "codex", "--prompt", "1+3"])
+
+        assert new_calls == [("foo-codex-test-4", None, None)]
+        assert launch_calls == [("foo-codex-test-4", "codex", "1+3", None)]
+        assert "Created session 'foo-codex-test-4'" in capsys.readouterr().out
+
+    def test_new_with_agent_and_directory_passes_expected_cwd(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        launch_calls: list[tuple[str, str, str | None, str | None]] = []
+        expected_cwd = "/tmp/worktree"
+
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(core, "load_profiles", lambda path=None: {})
+        monkeypatch.setattr(core, "new_session", lambda name, *, directory=None, desc=None, command=None: None)
+        monkeypatch.setattr(
+            core,
+            "launch_agent_session",
+            lambda session_name, command, *, prompt=None, expected_cwd=None, prompt_timeout=30.0: launch_calls.append((session_name, command, prompt, expected_cwd)),
+        )
+
+        cli_main(["new", "foo", "-c", expected_cwd, "--agent", "codex"])
+
+        assert launch_calls == [("foo", "codex", None, expected_cwd)]
+        assert "Created session 'foo'" in capsys.readouterr().out
+
+    def test_new_with_here_applies_directory_metadata_and_can_jump(self, monkeypatch: pytest.MonkeyPatch):
+        launch_calls: list[tuple[str, str, str | None, str | None]] = []
+        metadata_calls: list[tuple[str, str]] = []
+        jump_calls: list[str] = []
+        current_dir = "/tmp/worktree"
+
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(core, "load_profiles", lambda path=None: {})
+        monkeypatch.setattr(core, "new_session", lambda name, *, directory=None, desc=None, command=None: None)
+        monkeypatch.setattr(core, "infer_session_name_for_directory", lambda directory: "worktree")
+        monkeypatch.setattr(core, "apply_directory_metadata", lambda session_name, directory: metadata_calls.append((session_name, directory)) or {})
+        monkeypatch.setattr(
+            core,
+            "launch_agent_session",
+            lambda session_name, command, *, prompt=None, expected_cwd=None, prompt_timeout=30.0: launch_calls.append((session_name, command, prompt, expected_cwd)),
+        )
+        monkeypatch.setattr(core, "jump_session", lambda name: jump_calls.append(name))
+        monkeypatch.setattr("tmux_pilot.cli.os.getcwd", lambda: current_dir)
+
+        cli_main(["new", "--here", "--agent", "codex", "--jump"])
+
+        assert metadata_calls == [("worktree", current_dir)]
+        assert launch_calls == [("worktree", "codex", None, current_dir)]
+        assert jump_calls == ["worktree"]
+
+    def test_new_here_conflicts_with_directory(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["new", "foo", "--here", "-c", "/tmp/other"])
+
+        assert exc_info.value.code == 1
+        assert "--here cannot be combined with --directory" in capsys.readouterr().err
+
+    def test_new_without_name_uses_directory_name(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        new_calls: list[tuple[str, str | None, str | None]] = []
+
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(core, "load_profiles", lambda path=None: {})
+        monkeypatch.setattr(core, "infer_session_name_for_directory", lambda directory: "my-worktree")
+        monkeypatch.setattr(
+            core,
+            "new_session",
+            lambda name, *, directory=None, desc=None, command=None: new_calls.append((name, directory, desc)),
+        )
+
+        cli_main(["new", "-c", "/tmp/my-worktree"])
+
+        assert new_calls == [("my-worktree", "/tmp/my-worktree", None)]
+        assert "Created session 'my-worktree'" in capsys.readouterr().out
+
+    def test_new_without_name_auto_uniqueifies_inferred_name(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        new_calls: list[tuple[str, str | None, str | None]] = []
+        existing = {"agentic-trace-analyzer", "agentic-trace-analyzer-1"}
+        current_dir = "/tmp/agentic-trace-analyzer"
+
+        monkeypatch.setattr(core, "session_exists", lambda name: name in existing)
+        monkeypatch.setattr(core, "load_profiles", lambda path=None: {})
+        monkeypatch.setattr(core, "infer_session_name_for_directory", lambda directory: "agentic-trace-analyzer")
+        monkeypatch.setattr("tmux_pilot.cli.os.getcwd", lambda: current_dir)
+        monkeypatch.setattr(core, "apply_directory_metadata", lambda session_name, directory: {})
+        monkeypatch.setattr(
+            core,
+            "new_session",
+            lambda name, *, directory=None, desc=None, command=None: new_calls.append((name, directory, desc)),
+        )
+
+        cli_main(["new", "--here"])
+
+        assert new_calls == [("agentic-trace-analyzer-2", current_dir, None)]
+        assert "Created session 'agentic-trace-analyzer-2'" in capsys.readouterr().out
+
+    def test_new_without_name_errors_when_no_directory_context(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(core, "load_profiles", lambda path=None: {})
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["new"])
+
+        assert exc_info.value.code == 1
+        assert "Session name is required unless --directory or --here is provided." in capsys.readouterr().err
+
+    def test_launch_agent_session_waits_before_prompt(self, monkeypatch: pytest.MonkeyPatch):
+        send_keys_calls: list[tuple[str, str]] = []
+        send_text_calls: list[tuple[str, str, bool, float]] = []
+
+        monkeypatch.setattr(core, "send_keys", lambda name, text: send_keys_calls.append((name, text)))
+        monkeypatch.setattr(
+            core,
+            "send_text",
+            lambda name, text, *, wait=False, timeout=30.0, interval=0.25: send_text_calls.append((name, text, wait, timeout)) or {},
+        )
+
+        core.launch_agent_session(TEST_SESSION, "codex", prompt="1+3", prompt_timeout=12.0)
+
+        assert send_keys_calls == [(TEST_SESSION, "codex")]
+        assert send_text_calls == [(TEST_SESSION, "1+3", True, 12.0)]
+
+    def test_launch_agent_session_restores_expected_cwd_before_launch(self, fake_tmux: FakeTmux, tmp_path):
+        expected_cwd = str(tmp_path)
+        core.new_session(TEST_SESSION, directory=expected_cwd)
+        fake_tmux.sessions[TEST_SESSION]["path"] = "/Users/cjm"
+
+        core.launch_agent_session(TEST_SESSION, "codex", expected_cwd=expected_cwd)
+
+        assert fake_tmux.sessions[TEST_SESSION]["path"] == expected_cwd
+        assert fake_tmux.send_key_calls == [
+            (TEST_SESSION, True, [f"cd {shlex.quote(expected_cwd)}"]),
+            (TEST_SESSION, False, ["Enter"]),
+            (TEST_SESSION, True, ["codex"]),
+            (TEST_SESSION, False, ["Enter"]),
+        ]
+
+    def test_launch_agent_session_raises_when_cwd_cannot_be_restored(
+        self,
+        fake_tmux: FakeTmux,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        expected_cwd = str(tmp_path)
+        core.new_session(TEST_SESSION, directory=expected_cwd)
+        fake_tmux.sessions[TEST_SESSION]["path"] = "/Users/cjm"
+        fake_tmux.ignore_cd = True
+        monkeypatch.setattr(core.time, "sleep", lambda seconds: None)
+        monotonic_values = iter([0.0, 0.5, 1.0, 3.0])
+        monkeypatch.setattr(core.time, "monotonic", lambda: next(monotonic_values))
+
+        with pytest.raises(RuntimeError, match="will not launch the agent"):
+            core.launch_agent_session(TEST_SESSION, "codex", expected_cwd=expected_cwd)
+
+        assert fake_tmux.send_key_calls == [
+            (TEST_SESSION, True, [f"cd {shlex.quote(expected_cwd)}"]),
+            (TEST_SESSION, False, ["Enter"]),
+        ]
+
+    def test_launch_agent_session_raises_when_agent_changes_cwd_after_launch(
+        self,
+        fake_tmux: FakeTmux,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        expected_cwd = str(tmp_path)
+        fake_tmux.path_after_commands["codex"] = "/Users/cjm"
+        core.new_session(TEST_SESSION, directory=expected_cwd)
+        monkeypatch.setattr(core.time, "sleep", lambda seconds: None)
+        monotonic_values = iter([0.0, 0.5, 1.0, 3.0])
+        monkeypatch.setattr(core.time, "monotonic", lambda: next(monotonic_values))
+
+        with pytest.raises(RuntimeError, match="changed to"):
+            core.launch_agent_session(TEST_SESSION, "codex", expected_cwd=expected_cwd)
+
+    def test_new_prompt_without_agent_errors_in_plain_mode(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(core, "load_profiles", lambda path=None: {})
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["new", "foo", "--prompt", "1+3"])
+
+        assert exc_info.value.code == 1
+        assert "--prompt requires --agent in plain mode" in capsys.readouterr().err

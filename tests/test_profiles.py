@@ -57,14 +57,14 @@ def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monke
         prompt_wait_timeout=12.0,
     )
     metadata_calls: list[tuple[str, str, str]] = []
-    send_calls: list[tuple[str, str]] = []
+    launch_calls: list[tuple[str, str, str | None, str | None, float]] = []
     new_calls: list[tuple[str, str | None, str | None, str | None]] = []
-    wait_calls: list[tuple[str, float, float]] = []
 
     repo_path = str(Path("~/repos/dismech").expanduser().resolve())
     worktree_dir = tmp_path / "dismech-review-wilson"
 
     monkeypatch.setattr(core, "resolve_session_profile", lambda *args, **kwargs: profile)
+    monkeypatch.setattr(core, "_resolve_repo_source", lambda repo, *, clone_base: repo_path)
     monkeypatch.setattr(core, "_fetch_issue_title", lambda repo_path, issue_number: "Review Wilson")
     monkeypatch.setattr(
         core,
@@ -82,13 +82,13 @@ def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monke
         lambda name, *, directory=None, desc=None, command=None: new_calls.append((name, directory, desc, command)),
     )
     monkeypatch.setattr(core, "set_metadata", lambda *args: metadata_calls.append(args))
-    monkeypatch.setattr(core, "send_keys", lambda session_name, text: send_calls.append((session_name, text)))
-
-    def fake_wait(name: str, *, timeout: float, interval: float = 0.25):
-        wait_calls.append((name, timeout, interval))
-        return {"type": "pi", "state": "idle", "ready": True}
-
-    monkeypatch.setattr(core, "wait_until_session_ready", fake_wait)
+    monkeypatch.setattr(
+        core,
+        "launch_agent_session",
+        lambda session_name, command, *, prompt=None, expected_cwd=None, prompt_timeout=30.0: launch_calls.append(
+            (session_name, command, prompt, expected_cwd, prompt_timeout)
+        ),
+    )
 
     result = core.create_profile_session(
         "review-wilson",
@@ -102,7 +102,7 @@ def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monke
             "review-wilson",
             str(worktree_dir),
             "Review Wilson",
-            f"pi --session-dir {worktree_dir}/.tmux-pilot/pi/sessions",
+            None,
         )
     ]
     assert metadata_calls == [
@@ -112,8 +112,15 @@ def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monke
         ("review-wilson", "status", "active"),
         ("review-wilson", "desc", "Review Wilson"),
     ]
-    assert send_calls == [("review-wilson", "Summarize the issue and propose a fix.")]
-    assert wait_calls == [("review-wilson", 12.0, 0.25)]
+    assert launch_calls == [
+        (
+            "review-wilson",
+            f"pi --session-dir {worktree_dir}/.tmux-pilot/pi/sessions",
+            "Summarize the issue and propose a fix.",
+            str(worktree_dir),
+            12.0,
+        ),
+    ]
     assert result["branch"] == "fix/771-review-wilson"
     assert result["worktree"] == str(worktree_dir)
 
@@ -124,7 +131,7 @@ def test_create_profile_session_launches_agent_in_directory_without_bootstrap(mo
         command=("codex", "--profile", "yolo"),
     )
     metadata_calls: list[tuple[str, str, str]] = []
-    send_calls: list[tuple[str, str]] = []
+    launch_calls: list[tuple[str, str, str | None, str | None, float]] = []
     new_calls: list[tuple[str, str | None, str | None, str | None]] = []
 
     monkeypatch.setattr(core, "resolve_session_profile", lambda *args, **kwargs: profile)
@@ -134,7 +141,13 @@ def test_create_profile_session_launches_agent_in_directory_without_bootstrap(mo
         lambda name, *, directory=None, desc=None, command=None: new_calls.append((name, directory, desc, command)),
     )
     monkeypatch.setattr(core, "set_metadata", lambda *args: metadata_calls.append(args))
-    monkeypatch.setattr(core, "send_keys", lambda session_name, text: send_calls.append((session_name, text)))
+    monkeypatch.setattr(
+        core,
+        "launch_agent_session",
+        lambda session_name, command, *, prompt=None, expected_cwd=None, prompt_timeout=30.0: launch_calls.append(
+            (session_name, command, prompt, expected_cwd, prompt_timeout)
+        ),
+    )
     monkeypatch.setattr(core, "_git_root", lambda path: "")
     monkeypatch.setattr(core, "_detect_git_branch", lambda path: "")
 
@@ -144,12 +157,12 @@ def test_create_profile_session_launches_agent_in_directory_without_bootstrap(mo
         directory=str(tmp_path),
     )
 
-    assert new_calls == [("local-task", str(tmp_path.resolve()), None, "codex --profile yolo")]
+    assert new_calls == [("local-task", str(tmp_path.resolve()), None, None)]
     assert metadata_calls == [
         ("local-task", "task", "local-task"),
         ("local-task", "status", "active"),
     ]
-    assert send_calls == []
+    assert launch_calls == [("local-task", "codex --profile yolo", None, str(tmp_path.resolve()), 10.0)]
     assert result["worktree"] == str(tmp_path.resolve())
 
 
