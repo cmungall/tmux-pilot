@@ -38,12 +38,12 @@ Triggers:
 - `--no-agent`
 - `--branch`
 - `--base-ref`
-- an existing `[default]` profile when plain mode is not forced
+- an existing `[default]` profile when plain mode is not forced and `--directory` is absent
 
 Behavior:
 
-- resolves repo, worktree base, agent, `agent_args`, and branch prefix from the selected profile
-- uses `--directory` for an in-place launch when provided
+- resolves repo, worktree base, clone base, command, env, base ref, prompt timeout, and branch prefix from the selected profile
+- uses `--directory` for an in-place launch when the resolved profile does not require repo bootstrap
 - otherwise creates a task worktree from the configured repo and base ref
 - records repo and branch metadata
 - optionally launches the resolved agent
@@ -54,18 +54,24 @@ Behavior:
 
 Supported fields:
 
+- `extends`: inherit settings from another profile
 - `repo`: local repository path
-- `agent`: agent command to launch
-- `agent_args`: stable flags appended to `agent`
 - `worktree_base`: parent directory for created worktrees
+- `clone_base`: parent directory used when bootstrapping from a repo clone
+- `base_ref`: default base ref used when creating a worktree branch
 - `branch_prefix`: branch prefix such as `feat` or `fix`
+- `command`: agent command to launch
+- `env`: environment variables to set for the launched agent command
+- `prompt_wait_timeout`: how long to wait before sending the initial prompt
+- `agent`: legacy alias for `command`; still accepted
+- `agent_args`: legacy stable flags appended to `agent`; still accepted
 
 ## Option Semantics
 
 - `--agent`: command to launch in the session, such as `claude`, `claude-code`, or `codex`
 - `--prompt`: initial text to send after the agent launches
 - `NAME`: optional when `--directory` or `--here` is present
-- `--directory`: existing working directory; plain mode creates a bare session there, while profile mode launches the selected profile in place
+- `--directory`: existing working directory; plain mode creates a bare session there, while an explicit built-in or repo-less profile launches in place
 - `--here`: plain mode shortcut for “use the current working directory and infer git metadata”
 - `--repo`: profile mode bootstrap source or repo override
 - `--no-agent`: profile mode only; create the worktree/session but skip launching the configured agent

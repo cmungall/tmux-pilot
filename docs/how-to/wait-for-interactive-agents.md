@@ -1,6 +1,6 @@
 # Wait For Interactive Agents
 
-Use this guide when you already have a live Codex or Claude Code session and need to send another instruction without racing the prompt.
+Use this guide when you already have a live Codex, Claude Code, or Pi session and need to send another instruction without racing the prompt.
 
 ## Send a follow-up instruction
 
@@ -44,6 +44,7 @@ That means `tp` does not send as soon as the task is merely complete. It waits u
 
 - `codex`
 - `claude-code`
+- `pi`
 
 Other agents still fall back to pane heuristics only.
 

@@ -1,0 +1,187 @@
+:root {
+  --md-primary-fg-color: #0f5c59;
+  --md-primary-fg-color--light: #3f7d7a;
+  --md-primary-fg-color--dark: #093533;
+  --md-accent-fg-color: #cf6d00;
+  --tmux-paper: #f7f1e6;
+  --tmux-surface: rgba(255, 255, 255, 0.76);
+  --tmux-border: rgba(15, 92, 89, 0.14);
+  --tmux-shadow: 0 24px 50px rgba(10, 38, 38, 0.12);
+  --tmux-ink: #122428;
+  --tmux-muted: #4f6566;
+  --tmux-signal: #d97706;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #78c9c1;
+  --md-primary-fg-color--light: #9bddd7;
+  --md-primary-fg-color--dark: #4d9f98;
+  --md-accent-fg-color: #ffb454;
+  --tmux-paper: #0d171b;
+  --tmux-surface: rgba(17, 29, 34, 0.88);
+  --tmux-border: rgba(120, 201, 193, 0.16);
+  --tmux-shadow: 0 24px 50px rgba(0, 0, 0, 0.28);
+  --tmux-ink: #ecf7f6;
+  --tmux-muted: #a5bebf;
+  --tmux-signal: #ffb454;
+}
+
+body,
+.md-main {
+  background:
+    radial-gradient(circle at top left, rgba(217, 119, 6, 0.08), transparent 28rem),
+    radial-gradient(circle at top right, rgba(15, 92, 89, 0.12), transparent 28rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0)),
+    var(--tmux-paper);
+}
+
+.md-header {
+  backdrop-filter: blur(18px);
+  background-color: color-mix(in srgb, var(--tmux-paper) 78%, transparent);
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background-color: color-mix(in srgb, var(--tmux-paper) 72%, transparent);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  letter-spacing: -0.03em;
+}
+
+.md-typeset .hero {
+  position: relative;
+  overflow: hidden;
+  padding: 2.5rem;
+  margin-bottom: 2rem;
+  border: 1px solid var(--tmux-border);
+  border-radius: 1.5rem;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.18)),
+    linear-gradient(0deg, transparent 24px, var(--tmux-border) 25px, transparent 26px),
+    linear-gradient(90deg, transparent 24px, var(--tmux-border) 25px, transparent 26px),
+    var(--tmux-surface);
+  box-shadow: var(--tmux-shadow);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .hero {
+  background:
+    linear-gradient(135deg, rgba(22, 41, 47, 0.92), rgba(11, 21, 25, 0.88)),
+    linear-gradient(0deg, transparent 24px, var(--tmux-border) 25px, transparent 26px),
+    linear-gradient(90deg, transparent 24px, var(--tmux-border) 25px, transparent 26px),
+    var(--tmux-surface);
+}
+
+.md-typeset .hero::after {
+  content: "";
+  position: absolute;
+  inset: auto -6rem -6rem auto;
+  width: 18rem;
+  height: 18rem;
+  background: radial-gradient(circle, rgba(217, 119, 6, 0.22), transparent 70%);
+  pointer-events: none;
+}
+
+.md-typeset .hero-eyebrow {
+  margin: 0 0 0.75rem;
+  color: var(--tmux-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.md-typeset .hero h1 {
+  margin-top: 0;
+  margin-bottom: 0.8rem;
+  color: var(--tmux-ink);
+  font-size: clamp(2.2rem, 4vw, 3.6rem);
+  line-height: 1.02;
+}
+
+.md-typeset .hero p,
+.md-typeset .mini-note {
+  color: var(--tmux-muted);
+}
+
+.md-typeset .hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-top: 1.4rem;
+}
+
+.md-typeset .hero-actions .md-button--primary {
+  background-color: var(--tmux-signal);
+  border-color: var(--tmux-signal);
+  color: #1d1403;
+}
+
+.md-typeset .command-band {
+  display: grid;
+  gap: 1rem;
+  margin: 1.25rem 0 2rem;
+}
+
+@media (min-width: 72rem) {
+  .md-typeset .command-band {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.md-typeset .command-tile,
+.md-typeset .note-panel {
+  padding: 1.05rem 1.1rem;
+  border: 1px solid var(--tmux-border);
+  border-radius: 1rem;
+  background: var(--tmux-surface);
+  box-shadow: var(--tmux-shadow);
+}
+
+.md-typeset .command-label {
+  display: inline-block;
+  margin-bottom: 0.5rem;
+  color: var(--tmux-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--tmux-border);
+  border-radius: 1rem;
+  background: var(--tmux-surface);
+  box-shadow: var(--tmux-shadow);
+}
+
+.md-typeset .grid.cards strong:first-child {
+  color: var(--tmux-ink);
+}
+
+.md-typeset .md-typeset__table table:not([class]) {
+  border-radius: 0.8rem;
+  overflow: hidden;
+}
+
+.md-typeset code {
+  border-radius: 0.3rem;
+}
+
+.md-typeset pre > code {
+  font-size: 0.83rem;
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.9rem;
+}
+
+.md-content__button {
+  color: var(--tmux-muted);
+}
+
+.md-typeset .small-reference {
+  font-size: 0.94rem;
+}
