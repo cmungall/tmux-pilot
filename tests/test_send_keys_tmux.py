@@ -292,6 +292,9 @@ def test_cli_new_bootstraps_worktree_and_launches_real_pi(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    if shutil.which("pi") is None:
+        pytest.skip("pi is required for Pi integration tests")
+
     repo = tmp_path / "repo"
     repo.mkdir()
     init_git_repo(repo)

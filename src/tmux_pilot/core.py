@@ -897,8 +897,6 @@ def create_profile_session(
     if (branch or base_ref) and not repo_source:
         raise RuntimeError("Branch/base-ref options require a git repo; pass --repo or run tp from a git checkout")
 
-    issue_title = _fetch_issue_title(_resolve_repo_source(repo_source, clone_base=profile.clone_base), issue) if issue is not None and repo_source else ""
-
     workspace: dict[str, str] = {}
     working_dir = ""
     if repo_source:
@@ -913,6 +911,12 @@ def create_profile_session(
         working_dir = workspace["worktree"]
     else:
         working_dir = str(Path(directory or os.getcwd()).expanduser().resolve())
+
+    issue_title = ""
+    if issue is not None:
+        issue_repo = workspace.get("repo", _git_root(working_dir))
+        if issue_repo:
+            issue_title = _fetch_issue_title(issue_repo, issue)
 
     session_desc = _initial_prompt_desc(desc, issue_title)
     rendered_command = ""
