@@ -15,6 +15,8 @@ Behavior:
 - sends the text only after readiness is confirmed
 - raises an error if the timeout is reached first
 
+Every successful `tp send` also records a sortable UTC timestamp in the session metadata as `last_send`.
+
 ## State values
 
 Current built-in states:
@@ -37,6 +39,14 @@ States that are not first-class yet:
 - trust prompt
 - shell idle
 - exited
+
+## Metadata
+
+`tp` stores session metadata as tmux user options.
+
+Relevant keys for steering:
+
+- `last_send`: updated after a successful `tp send`
 
 ## Transcript sources
 

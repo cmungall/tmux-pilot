@@ -231,7 +231,7 @@ tp status NAME
 
 ### `tp set` / `tp get` — Session metadata
 
-Metadata is stored as tmux user options (`@`-prefixed). Built-in keys: `repo`, `task`, `desc`, `status`, `origin`, `branch`, `needs`.
+Metadata is stored as tmux user options (`@`-prefixed). Common built-in keys include `repo`, `task`, `desc`, `status`, `origin`, `branch`, `needs`, and `last_send`.
 
 ```bash
 tp set NAME status "waiting-for-review"

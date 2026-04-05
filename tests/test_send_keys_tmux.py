@@ -130,7 +130,9 @@ def wait_for_mock_codex_prompt(session_name: str, *, timeout: float = 3.0) -> st
     def has_prompt() -> bool:
         nonlocal output
         output = core.peek_session(session_name, lines=200)
-        if "gpt-5.4 xhigh" in output:
+        # Narrow tmux panes can soft-wrap the status line, splitting "gpt-5.4"
+        # across lines in capture-pane output.
+        if "gpt-5.4xhigh" in "".join(output.split()):
             return True
         if "Press enter" in output:
             core.send_keys(session_name, "1")
