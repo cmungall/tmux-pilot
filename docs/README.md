@@ -4,7 +4,7 @@ This project keeps the docs split by Diataxis:
 
 - [Tutorials](./tutorials/drive-a-kept-alive-agent-session.md): guided, end-to-end learning.
 - [How-to guides](./how-to/wait-for-interactive-agents.md): solve a specific operational task.
-- [How-to guides](./how-to/start-task-sessions-with-profiles-and-worktrees.md): bootstrap task branches, worktrees, and agent profiles from `tp new`.
+- [How-to guides](./how-to/start-task-sessions-with-profiles-and-worktrees.md): copy-paste examples for Codex, Claude Code, Pi, and task/worktree bootstrap from `tp new`.
 - [Explanation](./explanation/file-backed-agent-state.md): why the agent-state model works the way it does.
 - [Reference](./reference/agent-state.md): commands, states, transcript sources, and current behavior.
 
