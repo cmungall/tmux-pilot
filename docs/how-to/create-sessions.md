@@ -58,7 +58,7 @@ tp new docs-pass --profile codex -c ~/repos/tmux-pilot
 tp new review-pass --profile claude -c ~/repos/myapp
 ```
 
-This uses the selected profile's command in the existing checkout passed by `--directory`. No new worktree is created.
+For built-in profiles and custom profiles without a configured `repo`, this uses the selected profile's command in the existing checkout passed by `--directory`. No new worktree is created.
 
 ## Create a profile-backed worktree session
 
@@ -79,19 +79,18 @@ Use `--profile` when you want worktree/profile behavior and also want to overrid
 
 ## `--directory` vs `--repo` vs `--here`
 
-- `--directory`: use an existing checkout as the working directory. In plain mode this creates a bare session there. With `--profile`, it launches the selected profile in place.
+- `--directory`: use an existing checkout as the working directory. In plain mode this creates a bare session there. With an explicit built-in or repo-less profile, it launches the selected profile in place.
 - `--repo`: profile mode bootstrap source. `tp` resolves or clones the repo, creates a task worktree, and launches the selected profile there.
 - `--here`: plain mode only. It uses the current directory, infers repo/branch/worktree metadata, and can infer the session name when `NAME` is omitted.
 
 ## Where agent flags belong
 
-Use `--agent` for the executable name or command. Put stable flags in `profiles.toml` as `agent_args`.
+Use `--agent` for one-off command overrides. Put stable launch settings in `profiles.toml` as `command`.
 
 Example:
 
 ```toml
 [default]
 repo = "~/repos/myapp"
-agent = "codex"
-agent_args = "--profile yolo --no-alt-screen"
+command = ["codex", "--profile", "yolo", "--no-alt-screen"]
 ```

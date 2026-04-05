@@ -16,6 +16,7 @@ htmlcov/
 
 # Build
 build/
+site/
 
 # Sandbox artifacts (codex/agent generated)
 .git-sandbox/

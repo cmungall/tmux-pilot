@@ -93,8 +93,8 @@ base_ref = "origin/main"
 Concrete config-driven examples:
 
 ```bash
-# Uses `[default]`, so it launches Codex even without `--profile`.
-tp new rename-types -c ~/repos/myapp
+# Explicit in-place launch using the built-in Codex profile.
+tp new rename-types --profile codex -c ~/repos/myapp
 
 # Uses repo/base_ref from `[profiles.myapp]`, so `--repo` is optional.
 tp new api-cleanup --profile myapp

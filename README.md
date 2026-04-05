@@ -61,8 +61,11 @@ tp kill auth-flow
 
 ## Docs
 
-Detailed documentation lives under [`docs/`](./docs/README.md) and is organized using Diataxis:
+The published documentation site is intended to live at <https://cmungall.github.io/tmux-pilot/>.
 
+Detailed documentation also lives under [`docs/`](./docs/overview.md) and is organized using Diataxis:
+
+- overview: [`docs/overview.md`](./docs/overview.md)
 - tutorial: [`docs/tutorials/drive-a-kept-alive-agent-session.md`](./docs/tutorials/drive-a-kept-alive-agent-session.md)
 - how-to: [`docs/how-to/create-sessions.md`](./docs/how-to/create-sessions.md)
 - how-to: [`docs/how-to/wait-for-interactive-agents.md`](./docs/how-to/wait-for-interactive-agents.md)
@@ -186,9 +189,8 @@ For interactive Codex sessions, `codex --profile yolo --no-alt-screen` plus `tp 
 Concrete config-driven examples:
 
 ```bash
-# Uses `[default]`, so this launches `codex --profile yolo`
-# even though no `--profile` flag was passed.
-tp new rename-types -c ~/repos/myapp
+# Explicit in-place launch using the built-in Codex profile.
+tp new rename-types --profile codex -c ~/repos/myapp
 
 # Uses the repo/base branch from `[profiles.myapp]`,
 # so `--repo ~/repos/myapp` is not needed here.

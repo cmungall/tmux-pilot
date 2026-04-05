@@ -1,0 +1,76 @@
+site_name: tmux-pilot
+site_description: CLI-first docs for running Codex, Claude Code, Pi, and other coding agents in tmux
+site_url: https://cmungall.github.io/tmux-pilot/
+repo_url: https://github.com/cmungall/tmux-pilot
+repo_name: cmungall/tmux-pilot
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Space Grotesk
+    code: IBM Plex Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Docs Overview: overview.md
+  - CLI Guides:
+      - Install and Quickstart: getting-started.md
+      - CLI Cookbook: cli-cookbook.md
+      - Create Sessions: how-to/create-sessions.md
+      - Profiles and Worktrees: how-to/start-task-sessions-with-profiles-and-worktrees.md
+      - Wait for Interactive Agents: how-to/wait-for-interactive-agents.md
+      - Tutorial: tutorials/drive-a-kept-alive-agent-session.md
+  - Concepts:
+      - File-Backed Agent State: explanation/file-backed-agent-state.md
+  - Reference:
+      - CLI Reference: reference/cli-reference.md
+      - Session Creation: reference/session-creation.md
+      - Agent State: reference/agent-state.md
+      - Python API: reference/python-api.md
