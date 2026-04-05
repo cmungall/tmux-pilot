@@ -1,0 +1,128 @@
+{
+  "nodes": [
+    {
+      "id": "Bronchiectasis",
+      "node_type": "phenotype",
+      "color": "#fef3c7",
+      "is_orphan": false,
+      "description": "Chronic airway dilation caused by persistent CFTR-linked mucus obstruction.",
+      "meta": {
+        "term_id": "HP:0002110",
+        "frequency": "FREQUENT",
+        "evidence_count": 2
+      }
+    },
+    {
+      "id": "CFTR",
+      "node_type": "genetic",
+      "color": "#f3e8ff",
+      "is_orphan": false,
+      "meta": {
+        "association": "Causative"
+      }
+    },
+    {
+      "id": "CFTR Dysfunction",
+      "node_type": "pathophysiology",
+      "color": "#dbeafe",
+      "is_orphan": false,
+      "description": "Reduced CFTR channel activity dehydrates airway secretions and impairs mucociliary clearance.",
+      "meta": {
+        "evidence_count": 3,
+        "genes": [
+          "CFTR"
+        ],
+        "cell_types": [
+          "epithelial cell of lower respiratory tract"
+        ],
+        "experimental_models": [
+          {
+            "name": "Patient-derived airway organoid",
+            "model_type": "ORGANOID",
+            "namo_type": "namo:Organoid",
+            "description": "Assays epithelial CFTR rescue in patient-derived tissue."
+          }
+        ]
+      }
+    },
+    {
+      "id": "F508del",
+      "node_type": "genetic",
+      "color": "#f3e8ff",
+      "is_orphan": false,
+      "meta": {
+        "clinical_significance": "Pathogenic",
+        "variant_type": "missense_variant"
+      }
+    },
+    {
+      "id": "Ivacaftor",
+      "node_type": "treatment",
+      "color": "#fce7f3",
+      "is_orphan": false,
+      "description": "CFTR potentiator used for responsive genotypes.",
+      "meta": {
+        "therapeutic_agents": [
+          "Ivacaftor"
+        ]
+      }
+    },
+    {
+      "id": "Mucus plugging",
+      "node_type": "orphan",
+      "color": "#fee2e2",
+      "is_orphan": true
+    },
+    {
+      "id": "Patient-derived airway organoid",
+      "node_type": "experimental_model",
+      "color": "#ccfbf1",
+      "is_orphan": false,
+      "meta": {
+        "model_type": "ORGANOID",
+        "namo_type": "namo:Organoid"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "CFTR",
+      "target": "CFTR Dysfunction",
+      "predicate": "contributes_to",
+      "is_orphan": false
+    },
+    {
+      "source": "F508del",
+      "target": "CFTR",
+      "predicate": "variant_of",
+      "is_orphan": false
+    },
+    {
+      "source": "CFTR Dysfunction",
+      "target": "Bronchiectasis",
+      "predicate": "causes",
+      "is_orphan": false
+    },
+    {
+      "source": "Ivacaftor",
+      "target": "CFTR Dysfunction",
+      "predicate": "targets",
+      "is_orphan": false
+    },
+    {
+      "source": "Patient-derived airway organoid",
+      "target": "CFTR Dysfunction",
+      "predicate": "models",
+      "is_orphan": false
+    },
+    {
+      "source": "Bronchiectasis",
+      "target": "Mucus plugging",
+      "predicate": "leads_to",
+      "is_orphan": true
+    }
+  ],
+  "orphan_targets": [
+    "Mucus plugging"
+  ]
+}

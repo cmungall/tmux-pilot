@@ -29,14 +29,22 @@ classifiers = [
 
 [project.scripts]
 tp = "tmux_pilot.cli:main"
+tp-pathograph-cx2 = "tmux_pilot.pathograph_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/cmungall/tmux-pilot"
 Repository = "https://github.com/cmungall/tmux-pilot"
 
+[project.optional-dependencies]
+pathograph = [
+    "ndex2>=3.9.0,<4",
+    "networkx[extra]>=3,<4",
+]
+
 [dependency-groups]
 dev = [
     "mypy>=1.15.0",
+    "ndex2>=3.9.0,<4",
     "pytest>=8.3.5",
     "pytest-cov>=6.0.0",
     "ruff>=0.11.2",

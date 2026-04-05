@@ -19,6 +19,10 @@ uv tool install tmux-pilot
 
 **Requirements:** Python 3.10+, tmux. Optional: fzf (for `tp jump` picker).
 
+Optional extras:
+
+- `pip install "tmux-pilot[pathograph]"` installs `tp-pathograph-cx2`, a dismech pathograph -> CX2 converter for NDEx/IndexBio workflows.
+
 ## Quick Start
 
 ```bash
@@ -50,6 +54,7 @@ Detailed documentation lives under [`docs/`](./docs/README.md) and is organized 
 
 - tutorial: [`docs/tutorials/drive-a-kept-alive-agent-session.md`](./docs/tutorials/drive-a-kept-alive-agent-session.md)
 - how-to: [`docs/how-to/wait-for-interactive-agents.md`](./docs/how-to/wait-for-interactive-agents.md)
+- optional how-to: [`docs/how-to/convert-pathographs-to-cx2.md`](./docs/how-to/convert-pathographs-to-cx2.md)
 - explanation: [`docs/explanation/file-backed-agent-state.md`](./docs/explanation/file-backed-agent-state.md)
 - reference: [`docs/reference/agent-state.md`](./docs/reference/agent-state.md)
 
@@ -149,7 +154,7 @@ done
 
 ## Key Features
 
-- **Zero dependencies** — stdlib only (subprocess calls to tmux)
+- **Core session manager stays lightweight** — the `tp` session commands remain stdlib-driven; pathograph CX2 conversion is an optional extra
 - **Process detection** — distinguishes claude-code vs codex vs bare shell
 - **Metadata** — tmux user options (@status, @desc, @repo, @branch, etc.)
 - **Peek without attaching** — critical for orchestrators monitoring sessions
