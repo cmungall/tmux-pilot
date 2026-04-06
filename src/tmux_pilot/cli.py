@@ -15,25 +15,43 @@ from . import core, display, hooks
 _NEW_DESCRIPTION = """Create a tmux session.
 
 Plain mode creates a detached tmux session with an optional working directory and description.
-It can also launch an agent command directly in that session with --agent and optionally send an
-initial prompt with --prompt. Use --here to root the session in your current folder and copy repo,
-branch, and worktree metadata from that checkout.
+It can also launch a one-off agent command directly in that session with --agent and optionally
+send an initial prompt with --prompt. Use --here to root the session in your current folder and
+copy repo, branch, and worktree metadata from that checkout.
 
-Profile mode launches a configured profile in-place with --directory or bootstraps a task worktree
-with --repo. It can derive branches, create worktrees, launch the selected agent command, and send
-an initial prompt once the agent becomes ready.
+Profile mode launches a built-in or configured profile in-place with --directory or bootstraps a
+task worktree with --repo. It can derive branches, create worktrees, launch the selected agent
+command, and send an initial prompt once the agent becomes ready.
+
+Built-in profiles:
+  codex  -> codex --profile yolo
+  claude -> claude --permission-mode bypassPermissions
+  pi     -> pi --session-dir {worktree}/.tmux-pilot/pi/sessions
 """
 
 
-_NEW_EPILOG = """Examples:
+_NEW_EPILOG = """Plain mode examples:
+  tp new scratch
   tp new scratch -c ~/repos/myapp
-  tp new -c ~/repos/myapp
   tp new --here
-  tp new scratch --here --jump
-  tp new foo-codex-test --agent codex --prompt "1+3"
-  tp new review-771 --profile dismech --issue 771
-  tp new codex-fix --profile default --agent codex --prompt "Write tests for the parser"
+  tp new parser-pass --agent "codex --profile yolo --no-alt-screen"
+  tp new parser-pass --agent "codex --profile yolo --no-alt-screen" --prompt "summarize the parser"
+
+In-place profile examples:
+  tp new docs-pass --profile codex -c ~/repos/tmux-pilot
+  tp new review-pass --profile claude -c ~/repos/myapp
+  tp new pi-local --profile pi -c ~/repos/pi-mono
+
+Repo/bootstrap examples:
+  tp new oauth-fix --profile codex --repo ~/repos/myapp
+  tp new issue-771 --profile claude --repo ~/repos/myapp --issue 771
+  tp new pi-smoke --profile pi --repo badlogic/pi-mono
   tp new cleanup --profile codex --repo ~/repos/myapp --branch chore/cleanup
+  tp new backport --profile codex --repo ~/repos/myapp --base-ref origin/release/1.2
+
+Config-driven examples:
+  tp new api-cleanup --profile myapp
+  tp new triage-pass --profile myapp --no-agent
 
 Agent values are shell commands, not fixed enums. Use the command you would launch inside tmux.
 Common values: claude, claude-code, codex, pi
@@ -345,15 +363,26 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Session name; optional with --directory or --here, where it defaults to the directory or worktree name",
     )
-    p_new.add_argument("--profile", help="Named profile from ~/.config/tmux-pilot/profiles.toml")
-    p_new.add_argument("--issue", type=int, help="GitHub issue number to derive metadata from")
-    p_new.add_argument("--agent", help="Override the profile's agent command or plain-mode launch command")
-    p_new.add_argument("--repo", help="Bootstrap from a local repo path or GitHub owner/repo[/url]")
-    p_new.add_argument("-c", "--directory", help="Working directory for a non-bootstrap session or in-place profile launch")
-    p_new.add_argument("--branch", help="Override the derived task branch name")
-    p_new.add_argument("--base-ref", help="Override the base ref used when creating a task worktree")
-    p_new.add_argument("--no-agent", action="store_true", help="Create the session without launching an agent")
-    p_new.add_argument("--prompt", help="Initial prompt to send to the agent after startup")
+    p_new.add_argument(
+        "--profile",
+        help="Built-in or configured profile name; built-ins include codex, claude, and pi",
+    )
+    p_new.add_argument("--issue", type=int, help="GitHub issue number used for branch naming and @desc")
+    p_new.add_argument("--agent", help="One-off command override for plain mode or the selected profile")
+    p_new.add_argument("--repo", help="Bootstrap from a local repo path, GitHub owner/repo, or GitHub URL")
+    p_new.add_argument(
+        "-c",
+        "--directory",
+        help="Existing directory for a plain session or an in-place profile launch",
+    )
+    p_new.add_argument("--branch", help="Override the derived task branch name, e.g. chore/name-cleanup")
+    p_new.add_argument("--base-ref", help="Override the starting ref for a bootstrap worktree, e.g. origin/release/1.2")
+    p_new.add_argument(
+        "--no-agent",
+        action="store_true",
+        help="Create the session or worktree without launching the profile command",
+    )
+    p_new.add_argument("--prompt", help="Initial prompt to send after the agent becomes ready")
     p_new.add_argument("--here", action="store_true", help="Plain mode only: use the current directory and infer git metadata from it")
     p_new.add_argument("-d", "--desc", help="Description")
     p_new.add_argument("-j", "--jump", action="store_true", help="Attach or switch to the new session immediately after creating it")
