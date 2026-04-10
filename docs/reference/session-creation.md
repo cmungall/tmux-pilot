@@ -2,6 +2,12 @@
 
 This page documents how `tp new` chooses between plain mode and profile mode.
 
+Built-in profile shortcuts:
+
+- `codex` -> `codex --profile yolo`
+- `claude` -> `claude --permission-mode bypassPermissions`
+- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+
 ## Plain Mode
 
 Plain mode creates a detached tmux session. It may also launch an agent command directly inside that session.
@@ -26,6 +32,15 @@ Behavior:
 
 In plain mode, `--prompt` requires `--agent`.
 
+Examples:
+
+```bash
+tp new scratch
+tp new scratch -c ~/repos/myapp
+tp new --here
+tp new parser-pass --agent "codex --profile yolo --no-alt-screen" --prompt "summarize the parser"
+```
+
 ## Profile Mode
 
 Profile mode creates a git worktree-backed tmux session using `~/.config/tmux-pilot/profiles.toml`.
@@ -49,6 +64,19 @@ Behavior:
 - optionally launches the resolved agent
 - optionally sends `--prompt`
 - verifies that the pane cwd stays on the requested directory or created worktree when launching the agent
+
+Examples:
+
+```bash
+# In-place launch in an existing checkout
+tp new docs-pass --profile codex -c ~/repos/tmux-pilot
+
+# Config-driven bootstrap using repo/base_ref from profiles.toml
+tp new api-cleanup --profile myapp
+
+# Explicit repo bootstrap from GitHub
+tp new pi-smoke --profile pi --repo badlogic/pi-mono
+```
 
 ## `profiles.toml` Fields
 

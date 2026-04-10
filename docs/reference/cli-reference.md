@@ -31,6 +31,12 @@ tp ls --json
 
 ## `tp new`
 
+Built-in profiles:
+
+- `codex` -> `codex --profile yolo`
+- `claude` -> `claude --permission-mode bypassPermissions`
+- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+
 ### Plain sessions
 
 ```bash
@@ -43,16 +49,26 @@ tp new --here
 ### Explicit profile launches
 
 ```bash
+# Starts `codex --profile yolo` in ~/repos/tmux-pilot
 tp new docs-pass --profile codex -c ~/repos/tmux-pilot
+
+# Starts `claude --permission-mode bypassPermissions` in ~/repos/myapp
 tp new review-pass --profile claude -c ~/repos/myapp
+
+# Starts `pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
 tp new pi-local --profile pi -c ~/repos/pi-mono
 ```
 
 ### Repo/bootstrap flow
 
 ```bash
+# Creates branch feat/oauth-fix and worktree ~/worktrees/myapp-oauth-fix
 tp new oauth-fix --profile codex --repo ~/repos/myapp
+
+# Creates branch fix/771-issue-771 and pulls the issue title into @desc
 tp new issue-771 --profile claude --repo ~/repos/myapp --issue 771
+
+# Clones ~/repos/pi-mono first if needed, then creates ~/worktrees/pi-mono-pi-smoke
 tp new pi-smoke --profile pi --repo badlogic/pi-mono
 ```
 

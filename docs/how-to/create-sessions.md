@@ -2,6 +2,12 @@
 
 Use this guide when you want to understand which `tp new` flags create a plain tmux session, which ones launch a profile in place, and which ones create a profile-backed worktree session.
 
+Built-in profiles:
+
+- `codex` -> `codex --profile yolo`
+- `claude` -> `claude --permission-mode bypassPermissions`
+- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+
 ## Create a plain tmux session
 
 ```bash
@@ -56,18 +62,32 @@ tp new review-771 --profile dismech --issue 771 --jump
 ```bash
 tp new docs-pass --profile codex -c ~/repos/tmux-pilot
 tp new review-pass --profile claude -c ~/repos/myapp
+tp new pi-local --profile pi -c ~/repos/pi-mono
 ```
 
 For built-in profiles and custom profiles without a configured `repo`, this uses the selected profile's command in the existing checkout passed by `--directory`. No new worktree is created.
+
+Those commands launch:
+
+- `codex --profile yolo`
+- `claude --permission-mode bypassPermissions`
+- `pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
 
 ## Create a profile-backed worktree session
 
 ```bash
 tp new review-771 --profile dismech --issue 771
 tp new auth-fix --profile default
+tp new pi-smoke --profile pi --repo badlogic/pi-mono
 ```
 
 Profile mode creates a worktree from the configured repository, records repo and branch metadata, and can launch the configured agent automatically.
+
+Concrete outcomes:
+
+- `tp new auth-fix --profile codex --repo ~/repos/myapp` derives branch `feat/auth-fix`, creates `~/worktrees/myapp-auth-fix`, and launches `codex --profile yolo`.
+- `tp new issue-771 --profile claude --repo ~/repos/myapp --issue 771` derives branch `fix/771-issue-771`, copies the issue title into `@desc`, and launches `claude --permission-mode bypassPermissions`.
+- `tp new pi-smoke --profile pi --repo badlogic/pi-mono` clones `~/repos/pi-mono` first if needed, creates `~/worktrees/pi-mono-pi-smoke`, and launches `pi --session-dir ~/worktrees/pi-mono-pi-smoke/.tmux-pilot/pi/sessions`.
 
 ## Override the profile's agent
 
