@@ -54,6 +54,18 @@ def test_builtin_codex_profile_matches_send_wait_timeout(tmp_path):
     assert profile.prompt_wait_timeout == 30.0
 
 
+def test_should_use_profile_mode_applies_default_profile_with_directory(tmp_path):
+    config = tmp_path / "profiles.toml"
+    config.write_text(
+        """
+[default]
+command = ["codex", "--profile", "yolo"]
+"""
+    )
+
+    assert core.should_use_profile_mode(directory=str(tmp_path), path=config) is True
+
+
 def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monkeypatch, tmp_path):
     profile = core.SessionProfile(
         name="pi",
@@ -239,6 +251,57 @@ def test_create_bootstrap_workspace_does_not_repeat_repo_prefix(monkeypatch, tmp
     ]
     assert result["worktree"] == str(expected_worktree)
     assert result["branch"] == "feat/tmux-pilot-issue-23"
+
+
+def test_create_profile_session_uses_directory_in_place_even_when_profile_has_repo(monkeypatch, tmp_path):
+    profile = core.SessionProfile(
+        name="myapp",
+        repo="~/repos/dismech",
+        command=("codex", "--profile", "yolo"),
+    )
+    metadata_calls: list[tuple[str, str, str]] = []
+    launch_calls: list[tuple[str, str, str | None, str | None, float]] = []
+    new_calls: list[tuple[str, str | None, str | None, str | None]] = []
+
+    monkeypatch.setattr(core, "resolve_session_profile", lambda *args, **kwargs: profile)
+    monkeypatch.setattr(
+        core,
+        "_create_bootstrap_workspace",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not bootstrap")),
+    )
+    monkeypatch.setattr(
+        core,
+        "new_session",
+        lambda name, *, directory=None, desc=None, command=None: new_calls.append((name, directory, desc, command)),
+    )
+    monkeypatch.setattr(core, "set_metadata", lambda *args: metadata_calls.append(args))
+    monkeypatch.setattr(
+        core,
+        "launch_agent_session",
+        lambda session_name, command, *, prompt=None, expected_cwd=None, prompt_timeout=30.0: launch_calls.append(
+            (session_name, command, prompt, expected_cwd, prompt_timeout)
+        ),
+    )
+    monkeypatch.setattr(core, "_git_root", lambda path: str(tmp_path.resolve()))
+    monkeypatch.setattr(core, "_detect_git_branch", lambda path: "feat/current")
+
+    result = core.create_profile_session(
+        "rename-types",
+        profile_name="myapp",
+        directory=str(tmp_path),
+    )
+
+    assert new_calls == [("rename-types", str(tmp_path.resolve()), None, None)]
+    assert metadata_calls == [
+        ("rename-types", "task", "rename-types"),
+        ("rename-types", "repo", str(tmp_path.resolve())),
+        ("rename-types", "branch", "feat/current"),
+        ("rename-types", "status", "active"),
+    ]
+    assert launch_calls == [("rename-types", "codex --profile yolo", None, str(tmp_path.resolve()), 10.0)]
+    assert result["repo"] == str(tmp_path.resolve())
+    assert result["worktree"] == str(tmp_path.resolve())
+    assert result["branch"] == "feat/current"
 
 
 def test_resolve_repo_source_clones_github_repo_when_missing(monkeypatch, tmp_path):

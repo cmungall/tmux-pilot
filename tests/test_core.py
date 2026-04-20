@@ -1393,6 +1393,49 @@ class TestCLI:
         assert new_calls == [("my-worktree", "/tmp/my-worktree", None)]
         assert "Created session 'my-worktree'" in capsys.readouterr().out
 
+    def test_new_with_directory_uses_default_profile_mode(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        create_calls: list[tuple[str, dict[str, object]]] = []
+        new_calls: list[str] = []
+
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(
+            core,
+            "load_profiles",
+            lambda path=None: {"default": core.SessionProfile(name="default", command=("codex", "--profile", "yolo"))},
+        )
+        monkeypatch.setattr(
+            core,
+            "create_profile_session",
+            lambda name, **kwargs: create_calls.append((name, kwargs)),
+        )
+        monkeypatch.setattr(
+            core,
+            "new_session",
+            lambda name, *, directory=None, desc=None, command=None: new_calls.append(name),
+        )
+
+        cli_main(["new", "rename-types", "-c", "/tmp/myapp"])
+
+        assert create_calls == [
+            (
+                "rename-types",
+                {
+                    "profile_name": None,
+                    "issue": None,
+                    "agent": None,
+                    "repo": None,
+                    "directory": "/tmp/myapp",
+                    "branch": None,
+                    "base_ref": None,
+                    "no_agent": False,
+                    "prompt": None,
+                    "desc": None,
+                },
+            )
+        ]
+        assert new_calls == []
+        assert "Created session 'rename-types'" in capsys.readouterr().out
+
     def test_new_without_name_auto_uniqueifies_inferred_name(self, monkeypatch: pytest.MonkeyPatch, capsys):
         new_calls: list[tuple[str, str | None, str | None]] = []
         existing = {"agentic-trace-analyzer", "agentic-trace-analyzer-1"}
