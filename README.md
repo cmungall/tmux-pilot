@@ -1,8 +1,8 @@
 # tmux-pilot
 
-A thin, opinionated CLI for managing tmux sessions that run AI coding agents (Claude Code, Codex, etc).
+A thin, opinionated CLI for managing tmux sessions, task worktrees, and PR metadata for AI coding agents (Claude Code, Codex, etc).
 
-**Why?** When you run multiple AI coding agents in parallel — each in its own tmux session — you need a way to list them, peek at their output, send follow-up instructions, and track metadata like status and branch. `tmux-pilot` wraps the fiddly tmux commands into a single `tp` command designed for both humans and AI orchestrators.
+**Why?** When you run multiple AI coding agents in parallel — each in its own tmux session and often each in its own git worktree — you need a way to bootstrap task branches, list active sessions, peek at output, send follow-up instructions, refresh PR state, and clean up once the branch lands. `tmux-pilot` wraps the fiddly tmux and git conventions into a single `tp` command designed for both humans and AI orchestrators.
 
 ## Install
 
@@ -31,7 +31,7 @@ tp new auth-flow --profile codex -c ~/repos/myapp
 tp new review-pass --profile claude -c ~/repos/myapp
 
 # Start Pi in an existing checkout.
-# tmux-pilot runs: pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions
+# tmux-pilot runs: pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions
 tp new pi-local --profile pi -c ~/repos/pi-mono
 
 # Bootstrap a task branch + worktree from a local repo, then launch Codex there.
@@ -45,6 +45,10 @@ tp new pi-smoke --profile pi --repo badlogic/pi-mono
 
 # Check on all your sessions
 tp ls
+
+# Refresh PR/review metadata, then show a compact dashboard
+tp refresh --repo myapp
+tp ls --cols NAME,PR,STATUS,DIR
 
 # Peek at output without attaching
 tp peek auth-flow -n 30
@@ -84,8 +88,24 @@ tp ls --json                   # JSON output (for AI orchestrators)
 tp ls --status active          # filter by @status metadata
 tp ls --repo myapp             # filter by repo (substring match)
 tp ls --process claude-code    # filter by detected process
+tp ls --all-metadata           # append known metadata columns
+tp ls --cols NAME,PR,DIR       # compact PR dashboard
 tp ls --json --status active   # combine filters with JSON
 ```
+
+`PR` is a compact summary column. It starts with the PR number, then appends short review/merge codes when available:
+
+- `M`: merged
+- `X`: closed
+- `A`: approved
+- `CR`: changes requested
+- `RR`: review required
+- `P`: pending review state
+- `D`: dirty/conflicted
+- `B`: blocked
+- `C`: clean
+
+Examples: `1548 RR D`, `1553 CR`, `1547 M`.
 
 ### `tp new` — Create a session
 
@@ -123,7 +143,7 @@ tp new auth-pass --profile codex -c ~/repos/myapp
 # Launches `claude --permission-mode bypassPermissions` in ~/repos/myapp
 tp new review-pass --profile claude -c ~/repos/myapp
 
-# Launches `pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
+# Launches `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
 tp new pi-local --profile pi -c ~/repos/pi-mono
 ```
 
@@ -159,7 +179,7 @@ Built-in launch profiles:
 
 - `codex`: `codex --profile yolo`
 - `claude`: `claude --permission-mode bypassPermissions`
-- `pi`: `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+- `pi`: `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir {worktree}/.tmux-pilot/pi/sessions`
 
 Recommended profile config lives at `~/.config/tmux-pilot/profiles.toml`:
 
@@ -225,15 +245,37 @@ tp jump                        # fzf picker (requires fzf)
 
 ### `tp status` — Detailed session info
 
-Shows process, PID, working directory, all metadata, and the last 5 lines of scrollback.
+Shows process, PID, working directory, all metadata, relative freshness for cached metadata, and the last 5 lines of scrollback.
 
 ```bash
 tp status NAME
 ```
 
+PR-related metadata is shown with refresh ages when available, for example:
+
+```text
+@pr = 1548 (updated 2m ago)
+@pr_review = REVIEW_REQUIRED (updated 2m ago)
+@pr_merge_state = DIRTY (updated 2m ago)
+@last_refresh = 2026-04-19T22:39:42.658Z
+```
+
+### `tp refresh` — Refresh PR metadata without reaping
+
+Use this when you want a review dashboard or fresh PR metadata without any destructive cleanup.
+
+```bash
+tp refresh                      # all sessions
+tp refresh docs-pass            # one named session
+tp refresh --repo myapp         # repo-scoped subset
+tp refresh --json               # machine-readable output
+```
+
+`tp refresh` updates `@pr`, `@pr_state`, `@pr_review`, `@pr_merge_state`, and `@last_refresh` in tmux metadata. It does not kill sessions, remove worktrees, or delete branches.
+
 ### `tp set` / `tp get` — Session metadata
 
-Metadata is stored as tmux user options (`@`-prefixed). Common built-in keys include `repo`, `task`, `desc`, `status`, `origin`, `branch`, `needs`, and `last_send`.
+Metadata is stored as tmux user options (`@`-prefixed). Common built-in keys include `repo`, `task`, `desc`, `status`, `origin`, `branch`, `needs`, `last_send`, `pr`, `pr_state`, `pr_review`, `pr_merge_state`, and `last_refresh`.
 
 ```bash
 tp set NAME status "waiting-for-review"
@@ -264,12 +306,16 @@ $ tp ls --json
 A typical orchestrator loop:
 
 ```bash
-# Poll for sessions needing attention
-tp ls --json --status needs-review | jq '.[].name' | while read name; do
+# Refresh review state for a repo
+tp refresh --repo myapp
+
+# See which branches need attention
+tp ls --cols NAME,PR,STATUS,DIR --repo myapp
+
+# Drill into the sessions that need work
+tp ls --json --repo myapp | jq -r '.[] | select(.metadata.pr_review == "CHANGES_REQUESTED") | .name' | while read name; do
   tp peek "$name" -n 20
-  # ... decide what to do ...
-  tp send "$name" "next instruction"
-  tp set "$name" status active
+  tp send --wait "$name" "address the requested review changes"
 done
 ```
 
@@ -277,10 +323,13 @@ done
 
 - **Zero dependencies** — stdlib only (subprocess calls to tmux)
 - **Process detection** — distinguishes claude-code vs codex vs bare shell
-- **Metadata** — tmux user options (@status, @desc, @repo, @branch, etc.)
+- **Task bootstrap** — create task branches and worktrees directly from `tp new --repo`
+- **PR refresh** — cache PR number, state, review state, and merge state with `tp refresh`
+- **Metadata** — tmux user options (@status, @desc, @repo, @branch, @pr, etc.)
+- **Metadata freshness** — `tp status` shows when cached fields were last updated
 - **Peek without attaching** — critical for orchestrators monitoring sessions
 - **JSON output** — `tp ls --json` for machine-readable session data
-- **Filtering** — `tp ls --status/--repo/--process` to narrow results
+- **Filtering** — `tp ls --status/--repo/--process` and `tp refresh --repo` to narrow results
 - **fzf integration** — optional fuzzy picker for `tp jump`
 
 ## License

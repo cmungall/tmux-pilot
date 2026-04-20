@@ -26,7 +26,7 @@ command, and send an initial prompt once the agent becomes ready.
 Built-in profiles:
   codex  -> codex --profile yolo
   claude -> claude --permission-mode bypassPermissions
-  pi     -> pi --session-dir {worktree}/.tmux-pilot/pi/sessions
+  pi     -> pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir {worktree}/.tmux-pilot/pi/sessions
 """
 
 
@@ -67,9 +67,9 @@ def cmd_ls(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps([s.to_dict() for s in sessions], indent=2))
     elif args.fzf:
-        print(display.format_fzf(sessions, cols=args.cols))
+        print(display.format_fzf(sessions, cols=args.cols, all_metadata=args.all_metadata))
     else:
-        print(display.format_session_table(sessions, cols=args.cols))
+        print(display.format_session_table(sessions, cols=args.cols, all_metadata=args.all_metadata))
 
 
 def cmd_new(args: argparse.Namespace) -> None:
@@ -329,6 +329,39 @@ def cmd_reap(args: argparse.Namespace) -> None:
     print(f"Reaped {reaped} session(s).")
 
 
+def cmd_refresh(args: argparse.Namespace) -> None:
+    from . import reaper
+
+    try:
+        results = reaper.refresh_pr_metadata(names=args.names or None, repo=args.repo)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return
+
+    if not results:
+        print("No sessions to refresh.")
+        return
+
+    for result in results:
+        if result.get("reason") == "no-branch":
+            print(f"{result['session']}  skipped (no-branch)")
+            continue
+
+        pr = result.get("pr")
+        pr_display = f"#{pr}" if pr is not None else "-"
+        state = result.get("pr_state") or "-"
+        review = result.get("pr_review") or "-"
+        merge_state = result.get("pr_merge_state") or "-"
+        print(
+            f"{result['session']}  branch={result.get('branch', '-') or '-'}"
+            f"  pr={pr_display}  state={state}  review={review}  merge={merge_state}"
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tp",
@@ -349,6 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ls.add_argument("--status", help="Filter by status (e.g. active, done)")
     p_ls.add_argument("--repo", help="Filter by repo name (substring match)")
     p_ls.add_argument("--process", help="Filter by process (e.g. claude-code, python)")
+    p_ls.add_argument("--all-metadata", action="store_true", help="Append all known metadata columns")
 
     # new
     p_new = sub.add_parser(
@@ -440,6 +474,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_reap.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     p_reap.add_argument("--include-no-pr", action="store_true", help="Also flag clean sessions with no PR")
 
+    # refresh
+    p_refresh = sub.add_parser("refresh", help="Refresh cached PR metadata")
+    p_refresh.add_argument("names", nargs="*", help="Optional session names to refresh")
+    p_refresh.add_argument("--repo", help="Filter by repo name (substring match)")
+    p_refresh.add_argument("--json", action="store_true", help="Output refreshed state as JSON")
+
     return parser
 
 
@@ -469,6 +509,7 @@ def main(argv: list[str] | None = None) -> None:
         "get": cmd_get,
         "install-hooks": cmd_install_hooks,
         "reap": cmd_reap,
+        "refresh": cmd_refresh,
     }
     handlers[args.command](args)
 

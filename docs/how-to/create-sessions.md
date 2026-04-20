@@ -6,7 +6,7 @@ Built-in profiles:
 
 - `codex` -> `codex --profile yolo`
 - `claude` -> `claude --permission-mode bypassPermissions`
-- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+- `pi` -> `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir {worktree}/.tmux-pilot/pi/sessions`
 
 ## Create a plain tmux session
 
@@ -71,7 +71,7 @@ Those commands launch:
 
 - `codex --profile yolo`
 - `claude --permission-mode bypassPermissions`
-- `pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
+- `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
 
 ## Create a profile-backed worktree session
 
@@ -87,7 +87,7 @@ Concrete outcomes:
 
 - `tp new auth-fix --profile codex --repo ~/repos/myapp` derives branch `feat/auth-fix`, creates `~/worktrees/myapp-auth-fix`, and launches `codex --profile yolo`.
 - `tp new issue-771 --profile claude --repo ~/repos/myapp --issue 771` derives branch `fix/771-issue-771`, copies the issue title into `@desc`, and launches `claude --permission-mode bypassPermissions`.
-- `tp new pi-smoke --profile pi --repo badlogic/pi-mono` clones `~/repos/pi-mono` first if needed, creates `~/worktrees/pi-mono-pi-smoke`, and launches `pi --session-dir ~/worktrees/pi-mono-pi-smoke/.tmux-pilot/pi/sessions`.
+- `tp new pi-smoke --profile pi --repo badlogic/pi-mono` clones `~/repos/pi-mono` first if needed, creates `~/worktrees/pi-mono-pi-smoke`, and launches `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir ~/worktrees/pi-mono-pi-smoke/.tmux-pilot/pi/sessions`.
 
 ## Override the profile's agent
 

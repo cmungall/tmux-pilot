@@ -30,6 +30,9 @@ METADATA_KEYS = (
     "last_send",
     "pr",
     "pr_state",
+    "pr_review",
+    "pr_merge_state",
+    "last_refresh",
     "pushing",
 )
 
@@ -70,7 +73,16 @@ _BUILTIN_PROFILE_DEFS: dict[str, dict[str, object]] = {
         "prompt_wait_timeout": 10.0,
     },
     "pi": {
-        "command": ["pi", "--session-dir", _PI_SESSION_DIR_TEMPLATE],
+        "command": [
+            "pi",
+            "--offline",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--session-dir",
+            _PI_SESSION_DIR_TEMPLATE,
+        ],
         "prompt_wait_timeout": 5.0,
     },
 }
@@ -323,14 +335,32 @@ def get_metadata(session_name: str, key: str) -> str:
     return _tmux("display-message", "-t", session_name, "-p", f"#{{@{key}}}", check=False)
 
 
-def set_metadata(session_name: str, key: str, value: str) -> None:
-    """Set a @metadata value on a session."""
+def _set_metadata_option(session_name: str, key: str, value: str) -> None:
+    """Set a single tmux @option value without touching companion timestamps."""
     _tmux("set-option", "-t", session_name, f"@{key}", value)
+
+
+def set_metadata(session_name: str, key: str, value: str) -> None:
+    """Set a @metadata value on a session and record when it changed."""
+    _set_metadata_option(session_name, key, value)
+    if key.endswith("_updated_at"):
+        return
+    _set_metadata_option(session_name, f"{key}_updated_at", _metadata_timestamp())
 
 
 def _metadata_timestamp() -> str:
     """Return a UTC timestamp suitable for sortable tmux metadata."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _get_metadata_updated_at(session_name: str, keys: list[str]) -> dict[str, str]:
+    """Fetch companion @<key>_updated_at timestamps for the given metadata keys."""
+    timestamps: dict[str, str] = {}
+    for key in keys:
+        value = get_metadata(session_name, f"{key}_updated_at")
+        if value:
+            timestamps[key] = value
+    return timestamps
 
 
 def new_session(
@@ -1350,6 +1380,7 @@ def get_session_status(name: str) -> dict:
         raise RuntimeError(f"Session '{name}' not found")
 
     pane_cmd, pane_path, pane_pid, meta = _session_pane_details(name)
+    metadata_updated_at = _get_metadata_updated_at(name, list(meta))
     scrollback = peek_session(name, lines=5)
     agent = _get_agent_state(
         name,
@@ -1363,6 +1394,7 @@ def get_session_status(name: str) -> dict:
         "pid": pane_pid,
         "working_dir": pane_path,
         "metadata": meta,
+        "metadata_updated_at": metadata_updated_at,
         "scrollback_tail": scrollback,
         "agent": agent,
     }

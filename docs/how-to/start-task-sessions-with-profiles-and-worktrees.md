@@ -13,7 +13,7 @@ tp new docs-pass --profile codex -c ~/repos/tmux-pilot
 # Runs: claude --permission-mode bypassPermissions
 tp new review-pass --profile claude -c ~/repos/myapp
 
-# Runs: pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions
+# Runs: pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions
 tp new pi-local --profile pi -c ~/repos/pi-mono
 ```
 
@@ -21,7 +21,7 @@ Built-in profiles:
 
 - `codex` -> `codex --profile yolo`
 - `claude` -> `claude --permission-mode bypassPermissions`
-- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+- `pi` -> `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir {worktree}/.tmux-pilot/pi/sessions`
 
 ## Bootstrap A Task Repo
 
@@ -57,7 +57,7 @@ tp new pi-smoke --profile pi --repo badlogic/pi-mono
 If `~/repos/pi-mono` does not exist yet, `tp` clones it first. Then it creates worktree `~/worktrees/pi-mono-pi-smoke`, derives branch `feat/pi-smoke`, and launches:
 
 ```bash
-pi --session-dir ~/worktrees/pi-mono-pi-smoke/.tmux-pilot/pi/sessions
+pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir ~/worktrees/pi-mono-pi-smoke/.tmux-pilot/pi/sessions
 ```
 
 Override the branch or base ref when needed:

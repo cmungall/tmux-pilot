@@ -88,6 +88,15 @@ result = reaper.reap_sessions(dry_run=True)
 print(result)
 ```
 
+## Refresh Cached PR Metadata
+
+```python
+from tmux_pilot import reaper
+
+result = reaper.refresh_pr_metadata(repo="myapp")
+print(result)
+```
+
 ## Recommendation
 
 If the workflow needs to survive shell boundaries, CI jobs, or multiple languages, prefer the CLI:

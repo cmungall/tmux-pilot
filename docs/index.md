@@ -9,7 +9,7 @@ hide:
 
 # Run Codex, Claude Code, and Pi in tmux without losing the thread.
 
-`tmux-pilot` gives you one operational CLI for starting agent sessions, bootstrapping task worktrees, peeking at live output, sending follow-up instructions, and cleaning up after the branch lands.
+`tmux-pilot` gives you one operational CLI for starting agent sessions, bootstrapping task worktrees, refreshing PR state, steering live agents, and cleaning up after the branch lands.
 
 <div class="hero-actions" markdown="1">
 
@@ -41,10 +41,11 @@ tp new auth-fix --profile claude --repo ~/repos/myapp --issue 771
 </div>
 
 <div class="command-tile" markdown="1">
-<span class="command-label">Send the next instruction safely</span>
+<span class="command-label">Refresh a repo dashboard</span>
 
 ```bash
-tp send --wait docs-pass "add tests for the OAuth callback"
+tp refresh --repo myapp
+tp ls --cols NAME,PR,STATUS,DIR --repo myapp
 ```
 
 </div>
@@ -72,6 +73,8 @@ tp send --wait docs-pass "add tests for the OAuth callback"
 === "Steer a long-lived session"
 
     ```bash
+    tp refresh --repo myapp
+    tp ls --cols NAME,PR,STATUS,DIR --repo myapp
     tp ls --status active
     tp peek docs-pass -n 50
     tp send --wait docs-pass "continue with regression coverage"
@@ -96,7 +99,7 @@ tp send --wait docs-pass "add tests for the OAuth callback"
 
 -   **Steering without attaching**
 
-    `tp ls`, `tp peek`, `tp send --wait`, and `tp status` let you manage live sessions from another terminal.
+    `tp refresh`, `tp ls`, `tp peek`, `tp send --wait`, and `tp status` let you manage live sessions from another terminal.
 
 </div>
 
@@ -110,7 +113,7 @@ tp send --wait docs-pass "add tests for the OAuth callback"
 
 -   **[CLI Cookbook](cli-cookbook.md)**
 
-    Find copy-paste examples for common flows: listing sessions, sending follow-ups, bootstrapping worktrees, cleaning up, and reaping merged branches.
+    Find copy-paste examples for common flows: listing sessions, refreshing PR dashboards, sending follow-ups, bootstrapping worktrees, cleaning up, and reaping merged branches.
 
 -   **[Profiles and Worktrees](how-to/start-task-sessions-with-profiles-and-worktrees.md)**
 

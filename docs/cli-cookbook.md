@@ -9,11 +9,26 @@ tp ls
 tp ls --status active
 tp ls --process codex
 tp ls --repo tmux-pilot
+tp refresh --repo tmux-pilot
 tp ls --json
+tp ls --all-metadata
 tp ls --cols NAME,STATUS,PROCESS,BRANCH
+tp ls --cols NAME,PR,STATUS,DIR
 ```
 
-Use `--json` when another tool needs structured session data. Use `--cols` when you want a tighter table for terminal work.
+Use `tp refresh` before dashboard-style `tp ls` views when you want current PR metadata. Use `--json` when another tool needs structured session data. Use `--cols` when you want a tighter table for terminal work.
+
+The compact `PR` column combines the PR number with short codes:
+
+- `M` merged
+- `X` closed
+- `A` approved
+- `CR` changes requested
+- `RR` review required
+- `P` pending
+- `D` dirty/conflicted
+- `B` blocked
+- `C` clean
 
 ## Start Sessions In Place
 
@@ -111,6 +126,18 @@ tp get docs-pass branch
 
 Built-in metadata is also surfaced through `tp status` and `tp ls --json`.
 
+## Refresh PR Metadata And Build A Review Dashboard
+
+```bash
+tp refresh
+tp refresh --repo myapp
+tp ls --cols NAME,PR,STATUS,DIR --repo myapp
+tp ls --all-metadata --repo myapp
+tp status docs-pass
+```
+
+Use this when `tp` is acting as the orchestration dashboard for many task worktrees. `tp status` shows the cached PR fields with relative freshness, and `tp ls --all-metadata` exposes the raw `PR_NUM`, `PR_STATE`, `REVIEW`, `MERGE_STATE`, and `LAST_REFRESH` columns when you need full detail.
+
 ## Clean Up Sessions And Worktrees
 
 ### Kill one session immediately
@@ -161,6 +188,12 @@ Use this when you want git lifecycle hooks wired to `tp`'s session cleanup flows
 ```bash
 # Start the task in a worktree
 tp new oauth-fix --profile codex --repo ~/repos/myapp
+
+# Refresh review and merge state across the repo
+tp refresh --repo myapp
+
+# See the compact dashboard
+tp ls --cols NAME,PR,STATUS,DIR --repo myapp
 
 # Check progress without attaching
 tp peek oauth-fix -n 40
