@@ -16,6 +16,7 @@ This page is the compact command reference for `tp`. For longer walkthroughs, us
 | `tp kill` | kill a session immediately |
 | `tp set` / `tp get` | manage tmux-backed session metadata |
 | `tp install-hooks` | install or remove git lifecycle hooks |
+| `tp refresh` | refresh cached PR metadata without cleanup |
 | `tp reap` | remove sessions whose PRs are merged |
 
 ## `tp ls`
@@ -25,9 +26,23 @@ tp ls
 tp ls --status active
 tp ls --process claude-code
 tp ls --repo myapp
+tp ls --all-metadata
 tp ls --cols NAME,STATUS,PROCESS,BRANCH
+tp ls --cols NAME,PR,STATUS,DIR
 tp ls --json
 ```
+
+`PR` is a compact summary column. It starts with the PR number and appends short codes when available:
+
+- `M` merged
+- `X` closed
+- `A` approved
+- `CR` changes requested
+- `RR` review required
+- `P` pending
+- `D` dirty/conflicted
+- `B` blocked
+- `C` clean
 
 ## `tp new`
 
@@ -35,7 +50,7 @@ Built-in profiles:
 
 - `codex` -> `codex --profile yolo`
 - `claude` -> `claude --permission-mode bypassPermissions`
-- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+- `pi` -> `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir {worktree}/.tmux-pilot/pi/sessions`
 
 ### Plain sessions
 
@@ -55,7 +70,7 @@ tp new docs-pass --profile codex -c ~/repos/tmux-pilot
 # Starts `claude --permission-mode bypassPermissions` in ~/repos/myapp
 tp new review-pass --profile claude -c ~/repos/myapp
 
-# Starts `pi --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
+# Starts `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir ~/repos/pi-mono/.tmux-pilot/pi/sessions`
 tp new pi-local --profile pi -c ~/repos/pi-mono
 ```
 
@@ -116,6 +131,7 @@ tp status docs-pass
 - detected process
 - working directory
 - tmux metadata
+- metadata freshness for cached fields such as PR state
 - current agent state
 - recent scrollback
 
@@ -150,6 +166,17 @@ tp install-hooks --path ~/.config/git/hooks
 tp install-hooks --uninstall
 ```
 
+## `tp refresh`
+
+```bash
+tp refresh
+tp refresh docs-pass
+tp refresh --repo myapp
+tp refresh --json
+```
+
+`tp refresh` updates cached PR metadata only. It writes `@pr`, `@pr_state`, `@pr_review`, `@pr_merge_state`, and `@last_refresh`, but it does not kill sessions, remove worktrees, or delete branches.
+
 ## `tp reap`
 
 ```bash
@@ -157,6 +184,8 @@ tp reap --dry-run
 tp reap --force
 tp reap --include-no-pr --dry-run
 ```
+
+`tp reap --dry-run` still refreshes and persists safe PR metadata before deciding what would be reaped.
 
 ## Notes On Current Behavior
 

@@ -114,6 +114,28 @@ def wait_for_output(session_name: str, text: str, *, timeout: float = 3.0) -> st
     return output
 
 
+def wait_for_pi_ready(session_name: str, *, timeout: float = 10.0) -> dict:
+    status: dict = {}
+    output = ""
+
+    def is_ready() -> bool:
+        nonlocal status, output
+        output = core.peek_session(session_name, lines=200)
+        status = core.get_session_status(session_name)
+        agent = status.get("agent", {})
+        return (
+            status.get("process") == "pi"
+            and agent.get("type") == "pi"
+            and agent.get("ready") is True
+        )
+
+    try:
+        wait_for(is_ready, timeout=timeout, message="timed out waiting for pi to become ready")
+    except AssertionError as exc:
+        raise AssertionError(f"{exc}\nLast tmux output:\n{output}\nLast status:\n{status}") from exc
+    return status
+
+
 def launch_mock_codex(session_name: str, workdir: Path) -> None:
     command = f"{shlex.quote(sys.executable)} -u {shlex.quote(str(MOCK_CODEX))}"
     core._run(
@@ -174,7 +196,7 @@ def launch_real_pi(session_name: str, workdir: Path, session_dir: Path) -> None:
         ["tmux", "new-session", "-d", "-s", session_name, "-c", str(workdir), command],
         check=True,
     )
-    wait_for_output(session_name, "pi v", timeout=8.0)
+    wait_for_pi_ready(session_name, timeout=10.0)
 
 
 def init_git_repo(path: Path) -> None:
@@ -317,7 +339,7 @@ branch_prefix = "task"
     cli_main(["new", session, "--profile", "pi", "--repo", str(repo)])
 
     expected_worktree = worktrees / f"{repo.name}-{session}"
-    wait_for_output(session, "pi v", timeout=8.0)
+    wait_for_pi_ready(session, timeout=12.0)
 
     status = core.get_session_status(session)
 

@@ -6,7 +6,7 @@ Built-in profile shortcuts:
 
 - `codex` -> `codex --profile yolo`
 - `claude` -> `claude --permission-mode bypassPermissions`
-- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+- `pi` -> `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir {worktree}/.tmux-pilot/pi/sessions`
 
 ## Plain Mode
 

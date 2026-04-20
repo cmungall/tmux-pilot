@@ -80,7 +80,7 @@ Exact built-in launch commands:
 
 - `codex` -> `codex --profile yolo`
 - `claude` -> `claude --permission-mode bypassPermissions`
-- `pi` -> `pi --session-dir {worktree}/.tmux-pilot/pi/sessions`
+- `pi` -> `pi --offline --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir {worktree}/.tmux-pilot/pi/sessions`
 
 ### 3. Bootstrap a task branch and worktree
 
@@ -104,12 +104,17 @@ What happens on the bootstrap path:
 ```bash
 tp ls
 tp ls --status active
+tp refresh --repo tmux-pilot
+tp ls --cols NAME,PR,STATUS,DIR --repo tmux-pilot
+tp ls --all-metadata --repo tmux-pilot
 tp peek docs-pass -n 60
 tp send --wait docs-pass "continue with the failing tests"
 tp status docs-pass
 tp jump docs-pass
 tp kill docs-pass
 ```
+
+Use `tp refresh` before `tp ls` when you want a current review dashboard. The compact `PR` column folds together the PR number plus short review/merge codes such as `A`, `CR`, `RR`, `D`, and `C`.
 
 ## Minimal Profile Config
 

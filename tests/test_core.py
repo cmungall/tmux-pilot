@@ -6,12 +6,13 @@ import json
 import re
 import shlex
 import subprocess
+from datetime import datetime, timezone
 
 import pytest
 
-from tmux_pilot import agent_sessions, core
+from tmux_pilot import agent_sessions, core, reaper
 from tmux_pilot.cli import main as cli_main
-from tmux_pilot.display import format_session_table, parse_cols
+from tmux_pilot.display import format_session_table, format_status, parse_cols
 
 
 TEST_SESSION = "_tp_test_session"
@@ -187,9 +188,12 @@ class FakeTmux:
         }
         for token, value in replacements.items():
             rendered = rendered.replace(token, value)
-        for key in core.METADATA_KEYS:
-            rendered = rendered.replace(f"#{{@{key}}}", str(session["metadata"].get(key, "")))
-        return re.sub(r"#\{@[^}]+\}", "", rendered)
+        rendered = re.sub(
+            r"#\{@([^}]+)\}",
+            lambda match: str(session["metadata"].get(match.group(1), "")),
+            rendered,
+        )
+        return rendered
 
 
 @pytest.fixture
@@ -253,6 +257,8 @@ class TestMetadata:
         core.new_session(TEST_SESSION)
         core.set_metadata(TEST_SESSION, "status", "running")
         assert core.get_metadata(TEST_SESSION, "status") == "running"
+        updated_at = core.get_metadata(TEST_SESSION, "status_updated_at")
+        assert updated_at.endswith("Z")
 
     def test_get_missing_key(self, fake_tmux: FakeTmux):
         core.new_session(TEST_SESSION)
@@ -616,6 +622,80 @@ class TestDisplay:
         assert "BRANCH" in result
         assert "feat/x" in result
 
+    def test_cols_support_review_and_merge_state(self):
+        result = format_session_table(
+            [
+                core.SessionInfo(
+                    name="s1",
+                    metadata={"pr_review": "APPROVED", "pr_merge_state": "CLEAN"},
+                )
+            ],
+            cols="NAME,REVIEW,MERGE_STATE",
+        )
+        assert "REVIEW" in result
+        assert "MERGE_STATE" in result
+        assert "APPROVED" in result
+        assert "CLEAN" in result
+
+    def test_pr_column_compacts_review_and_merge_codes(self):
+        result = format_session_table(
+            [
+                core.SessionInfo(
+                    name="s1",
+                    metadata={
+                        "pr": "1548",
+                        "pr_state": "OPEN",
+                        "pr_review": "REVIEW_REQUIRED",
+                        "pr_merge_state": "DIRTY",
+                    },
+                )
+            ],
+            cols="NAME,PR",
+        )
+        assert "PR" in result
+        assert "1548 RR D" in result
+
+    def test_pr_column_shows_merged_compactly(self):
+        result = format_session_table(
+            [
+                core.SessionInfo(
+                    name="s1",
+                    metadata={
+                        "pr": "1547",
+                        "pr_state": "MERGED",
+                        "pr_review": "APPROVED",
+                        "pr_merge_state": "UNKNOWN",
+                    },
+                )
+            ],
+            cols="NAME,PR",
+        )
+        assert "1547 M" in result
+        assert "UNKNOWN" not in result
+
+    def test_all_metadata_appends_known_metadata_columns(self):
+        result = format_session_table(
+            [
+                core.SessionInfo(
+                    name="s1",
+                    process="codex",
+                    working_dir="/tmp",
+                    metadata={
+                        "status": "active",
+                        "origin": "git-worktree",
+                        "last_refresh": "2026-04-19T22:15:00Z",
+                        "pr_state": "OPEN",
+                    },
+                )
+            ],
+            cols="NAME",
+            all_metadata=True,
+        )
+        assert "ORIGIN" in result
+        assert "LAST_REFRESH" in result
+        assert "PR_STATE" in result
+        assert "git-worktree" in result
+
     def test_cols_all_mnemonics(self):
         result = format_session_table(
             [
@@ -666,6 +746,50 @@ class TestDisplay:
         with pytest.raises(ValueError, match="Unknown column"):
             parse_cols("NAME,BOGUS")
 
+    def test_format_status_shows_metadata_update_ages(self):
+        rendered = format_status(
+            {
+                "name": "alpha",
+                "process": "codex",
+                "pid": "123",
+                "working_dir": "/tmp/alpha",
+                "metadata": {
+                    "status": "active",
+                    "pr": "42",
+                    "last_refresh": "2026-04-19T22:58:00Z",
+                },
+                "metadata_updated_at": {
+                    "status": "2026-04-19T22:00:00Z",
+                },
+                "agent": {},
+            },
+            now=datetime(2026, 4, 19, 23, 0, tzinfo=timezone.utc),
+        )
+
+        assert "@status = active (updated 1h ago)" in rendered
+        assert "@pr = 42 (updated 2m ago)" in rendered
+        assert "@last_refresh = 2026-04-19T22:58:00Z" in rendered
+
+    def test_format_status_hides_unknown_merge_state(self):
+        rendered = format_status(
+            {
+                "name": "alpha",
+                "process": "codex",
+                "pid": "123",
+                "working_dir": "/tmp/alpha",
+                "metadata": {
+                    "pr": "42",
+                    "pr_state": "MERGED",
+                    "pr_merge_state": "UNKNOWN",
+                },
+                "metadata_updated_at": {},
+                "agent": {},
+            }
+        )
+
+        assert "@pr_state = MERGED" in rendered
+        assert "@pr_merge_state" not in rendered
+
 
 class TestCLI:
     def test_help(self, capsys):
@@ -702,6 +826,86 @@ class TestCLI:
         cli_main(["ls", "--json", "--status", "active"])
         data = json.loads(capsys.readouterr().out)
         assert [session["name"] for session in data] == [TEST_SESSION]
+
+    def test_refresh_json(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            reaper,
+            "refresh_pr_metadata",
+            lambda names=None, repo=None: [
+                {
+                    "session": "alpha",
+                    "branch": "feat/alpha",
+                    "pr": 42,
+                    "pr_state": "OPEN",
+                    "pr_review": "APPROVED",
+                    "pr_merge_state": "CLEAN",
+                    "last_refresh": "2026-04-19T22:15:00Z",
+                    "skipped": False,
+                    "reason": "pr-open",
+                }
+            ],
+        )
+
+        cli_main(["refresh", "--json"])
+
+        data = json.loads(capsys.readouterr().out)
+        assert data[0]["session"] == "alpha"
+        assert data[0]["pr_merge_state"] == "CLEAN"
+
+    def test_refresh_named_subset(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        calls: list[tuple[list[str] | None, str | None]] = []
+
+        def refresh_pr_metadata(*, names=None, repo=None):
+            calls.append((names, repo))
+            return [
+                {
+                    "session": "alpha",
+                    "branch": "feat/alpha",
+                    "pr": 42,
+                    "pr_state": "OPEN",
+                    "pr_review": "APPROVED",
+                    "pr_merge_state": "CLEAN",
+                    "last_refresh": "2026-04-19T22:15:00Z",
+                    "skipped": False,
+                    "reason": "pr-open",
+                }
+            ]
+
+        monkeypatch.setattr(reaper, "refresh_pr_metadata", refresh_pr_metadata)
+
+        cli_main(["refresh", "alpha"])
+
+        assert calls == [(["alpha"], None)]
+        out = capsys.readouterr().out
+        assert "alpha" in out
+        assert "review=APPROVED" in out
+        assert "merge=CLEAN" in out
+
+    def test_refresh_repo_filter(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        calls: list[tuple[list[str] | None, str | None]] = []
+
+        def refresh_pr_metadata(*, names=None, repo=None):
+            calls.append((names, repo))
+            return []
+
+        monkeypatch.setattr(reaper, "refresh_pr_metadata", refresh_pr_metadata)
+
+        cli_main(["refresh", "--repo", "dismech"])
+
+        assert calls == [(None, "dismech")]
+        assert "No sessions to refresh." in capsys.readouterr().out
+
+    def test_ls_all_metadata(self, fake_tmux: FakeTmux, capsys):
+        core.new_session(TEST_SESSION, desc="metadata test")
+        core.set_metadata(TEST_SESSION, "origin", "git-worktree")
+        core.set_metadata(TEST_SESSION, "last_refresh", "2026-04-19T22:15:00Z")
+
+        cli_main(["ls", "--all-metadata"])
+
+        out = capsys.readouterr().out
+        assert "LAST_REFRESH" in out
+        assert "ORIGIN" in out
+        assert "git-worktree" in out
 
     def test_send_with_wait(self, monkeypatch: pytest.MonkeyPatch):
         calls: list[tuple[str, str, bool, float]] = []
