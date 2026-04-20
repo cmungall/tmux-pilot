@@ -292,7 +292,7 @@ def test_initial_prompt_timeout_leaves_prompt_undelivered_until_codex_startup_mo
     assert not note.exists()
 
     core.send_keys(session, "1")
-    wait_for_output(session, "TRUSTED")
+    wait_for_mock_codex_prompt(session)
 
     core.send_text(session, "write note.txt alpha", wait=True, timeout=3.0)
 
