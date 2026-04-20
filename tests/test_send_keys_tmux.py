@@ -335,10 +335,10 @@ branch_prefix = "task"
     )
     monkeypatch.setattr(core, "PROFILE_CONFIG_PATH", config)
 
-    session = "pi-task"
+    session = f"{repo.name}-pi-task"
     cli_main(["new", session, "--profile", "pi", "--repo", str(repo)])
 
-    expected_worktree = worktrees / f"{repo.name}-{session}"
+    expected_worktree = worktrees / session
     wait_for_pi_ready(session, timeout=12.0)
 
     status = core.get_session_status(session)
@@ -346,13 +346,13 @@ branch_prefix = "task"
     assert status["working_dir"] == str(expected_worktree)
     assert status["process"] == "pi"
     assert status["agent"]["type"] == "pi"
-    assert status["metadata"]["branch"] == "task/pi-task"
+    assert status["metadata"]["branch"] == f"task/{session}"
     assert subprocess.run(
         ["git", "-C", str(expected_worktree), "rev-parse", "--abbrev-ref", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
-    ).stdout.strip() == "task/pi-task"
+    ).stdout.strip() == f"task/{session}"
 
     core.send_keys(session, "/name tmux-pilot-pi")
     wait_for_output(session, "Session name set: tmux-pilot-pi", timeout=5.0)

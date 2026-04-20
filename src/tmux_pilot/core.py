@@ -1040,6 +1040,16 @@ def _initial_prompt_desc(desc: str | None, issue_title: str) -> str | None:
     return issue_title or desc
 
 
+def _bootstrap_worktree_leaf_name(repo_name: str, session_name: str) -> str:
+    """Build a stable worktree leaf name without repeating the repo prefix."""
+    repo_name_folded = repo_name.casefold()
+    session_name_folded = session_name.casefold()
+    repo_prefix = f"{repo_name_folded}-"
+    if session_name_folded == repo_name_folded or session_name_folded.startswith(repo_prefix):
+        return session_name
+    return f"{repo_name}-{session_name}"
+
+
 def _create_bootstrap_workspace(
     *,
     profile: SessionProfile,
@@ -1051,7 +1061,7 @@ def _create_bootstrap_workspace(
 ) -> dict[str, str]:
     repo_path = _resolve_repo_source(repo_source, clone_base=profile.clone_base)
     worktree_base = Path(profile.worktree_base).expanduser().resolve()
-    worktree_dir = worktree_base / f"{Path(repo_path).name}-{name}"
+    worktree_dir = worktree_base / _bootstrap_worktree_leaf_name(Path(repo_path).name, name)
 
     branch_name = branch or f"{profile.branch_prefix}/{_slugify_branch_component(name)}"
     if issue is not None and branch is None:

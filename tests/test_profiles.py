@@ -166,6 +166,74 @@ def test_create_profile_session_launches_agent_in_directory_without_bootstrap(mo
     assert result["worktree"] == str(tmp_path.resolve())
 
 
+def test_create_bootstrap_workspace_prefixes_repo_name_once(monkeypatch, tmp_path):
+    profile = core.SessionProfile(
+        name="codex",
+        worktree_base=str(tmp_path),
+        branch_prefix="feat",
+    )
+    repo_path = str((tmp_path / "tmux-pilot").resolve())
+    prepare_calls: list[tuple[str, Path, str, str]] = []
+
+    monkeypatch.setattr(core, "_resolve_repo_source", lambda repo, *, clone_base: repo_path)
+    monkeypatch.setattr(core, "_detect_base_ref", lambda repo_path, base_ref: "origin/main")
+    monkeypatch.setattr(
+        core,
+        "_prepare_worktree",
+        lambda repo_path, *, worktree_dir, branch, base_ref: prepare_calls.append(
+            (repo_path, worktree_dir, branch, base_ref)
+        ),
+    )
+
+    result = core._create_bootstrap_workspace(
+        profile=profile,
+        name="issue-23",
+        repo_source="~/repos/tmux-pilot",
+    )
+
+    expected_worktree = tmp_path / "tmux-pilot-issue-23"
+
+    assert prepare_calls == [
+        (repo_path, expected_worktree, "feat/issue-23", "origin/main"),
+    ]
+    assert result["worktree"] == str(expected_worktree)
+    assert result["branch"] == "feat/issue-23"
+
+
+def test_create_bootstrap_workspace_does_not_repeat_repo_prefix(monkeypatch, tmp_path):
+    profile = core.SessionProfile(
+        name="codex",
+        worktree_base=str(tmp_path),
+        branch_prefix="feat",
+    )
+    repo_path = str((tmp_path / "tmux-pilot").resolve())
+    prepare_calls: list[tuple[str, Path, str, str]] = []
+
+    monkeypatch.setattr(core, "_resolve_repo_source", lambda repo, *, clone_base: repo_path)
+    monkeypatch.setattr(core, "_detect_base_ref", lambda repo_path, base_ref: "origin/main")
+    monkeypatch.setattr(
+        core,
+        "_prepare_worktree",
+        lambda repo_path, *, worktree_dir, branch, base_ref: prepare_calls.append(
+            (repo_path, worktree_dir, branch, base_ref)
+        ),
+    )
+
+    result = core._create_bootstrap_workspace(
+        profile=profile,
+        name="tmux-pilot-issue-23",
+        repo_source="~/repos/tmux-pilot",
+    )
+
+    expected_worktree = tmp_path / "tmux-pilot-issue-23"
+
+    assert prepare_calls == [
+        (repo_path, expected_worktree, "feat/tmux-pilot-issue-23", "origin/main"),
+    ]
+    assert result["worktree"] == str(expected_worktree)
+    assert result["branch"] == "feat/tmux-pilot-issue-23"
+
+
 def test_resolve_repo_source_clones_github_repo_when_missing(monkeypatch, tmp_path):
     clone_calls: list[tuple[list[str], str | None]] = []
 
