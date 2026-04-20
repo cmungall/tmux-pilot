@@ -294,7 +294,7 @@ def test_initial_prompt_timeout_leaves_prompt_undelivered_until_codex_startup_mo
     core.send_keys(session, "1")
     wait_for_mock_codex_prompt(session)
 
-    core.send_text(session, "write note.txt alpha", wait=True, timeout=3.0)
+    core.send_keys(session, "write note.txt alpha")
 
     wait_for(note.exists, timeout=3.0, message="timed out waiting for note.txt after follow-up send")
     wait_for(lambda: note.read_text() == "alpha\n", timeout=3.0, message="timed out waiting for note.txt contents")
