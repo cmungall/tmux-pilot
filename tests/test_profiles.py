@@ -47,6 +47,13 @@ command = ["codex", "--profile", "safe"]
     assert profile.command_parts == ("codex", "--profile", "safe")
 
 
+def test_builtin_codex_profile_matches_send_wait_timeout(tmp_path):
+    profile = core.resolve_session_profile("codex", path=tmp_path / "missing.toml")
+
+    assert profile is not None
+    assert profile.prompt_wait_timeout == 30.0
+
+
 def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monkeypatch, tmp_path):
     profile = core.SessionProfile(
         name="pi",

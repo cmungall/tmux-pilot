@@ -66,7 +66,7 @@ _PI_SESSION_DIR_TEMPLATE = "{worktree}/.tmux-pilot/pi/sessions"
 _BUILTIN_PROFILE_DEFS: dict[str, dict[str, object]] = {
     "codex": {
         "command": ["codex", "--profile", "yolo"],
-        "prompt_wait_timeout": 10.0,
+        "prompt_wait_timeout": 30.0,
     },
     "claude": {
         "command": ["claude", "--permission-mode", "bypassPermissions"],
@@ -465,6 +465,16 @@ def send_keys(name: str, text: str) -> None:
     _tmux("send-keys", "-t", name, "Enter")
 
 
+def _initial_prompt_failure_message(session_name: str, prompt: str, exc: RuntimeError) -> str:
+    retry_command = f"tp send --wait {shlex.quote(session_name)} {shlex.quote(prompt)}"
+    return (
+        f"{exc}\n"
+        f"Initial prompt was not delivered to session '{session_name}'.\n"
+        f"If the agent is still starting, retry with: {retry_command}\n"
+        "If Codex is blocked on a startup modal or trust prompt, dismiss it first and then rerun that command."
+    )
+
+
 def send_text(
     name: str,
     text: str,
@@ -811,7 +821,10 @@ def launch_agent_session(
     if expected_cwd:
         _verify_session_cwd_after_launch(session_name, expected_cwd)
     if prompt:
-        send_text(session_name, prompt, wait=True, timeout=prompt_timeout)
+        try:
+            send_text(session_name, prompt, wait=True, timeout=prompt_timeout)
+        except RuntimeError as exc:
+            raise RuntimeError(_initial_prompt_failure_message(session_name, prompt, exc)) from exc
 
 
 def _git_root(path: str) -> str:

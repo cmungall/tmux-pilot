@@ -276,6 +276,30 @@ def test_cli_send_wait_uses_codex_transcript_state_with_real_tmux(
     wait_for(lambda: second.read_text() == "beta\n", timeout=3.0, message="timed out waiting for second.txt contents")
 
 
+def test_initial_prompt_timeout_leaves_prompt_undelivered_until_codex_startup_modal_is_cleared(
+    real_tmux: RealTmuxServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = "mock-codex-startup-blocked"
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    launch_mock_codex(session, tmp_path)
+
+    with pytest.raises(RuntimeError, match=f"Timed out waiting for session '{session}'"):
+        core.send_text(session, "write note.txt alpha", wait=True, timeout=0.3)
+
+    note = tmp_path / "note.txt"
+    assert not note.exists()
+
+    core.send_keys(session, "1")
+    wait_for_output(session, "TRUSTED")
+
+    cli_main(["send", "--wait", "--timeout", "3", session, "write note.txt alpha"])
+
+    wait_for(note.exists, timeout=3.0, message="timed out waiting for note.txt after follow-up send")
+    wait_for(lambda: note.read_text() == "alpha\n", timeout=3.0, message="timed out waiting for note.txt contents")
+
+
 def test_cli_send_wait_uses_claude_transcript_state_with_real_tmux(
     real_tmux: RealTmuxServer,
     tmp_path: Path,
