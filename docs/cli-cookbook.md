@@ -88,6 +88,7 @@ tp jump docs-pass
 tp peek docs-pass -n 30
 tp peek docs-pass -n 100
 tp status docs-pass
+tp trace docs-pass
 ```
 
 Use `tp peek` when you need recent output but do not want to take over your terminal with `tmux attach`.
@@ -125,6 +126,19 @@ tp get docs-pass branch
 ```
 
 Built-in metadata is also surfaced through `tp status` and `tp ls --json`.
+
+When you need the transcript binding rather than pane scrollback, use:
+
+```bash
+tp trace docs-pass
+tp trace docs-pass --refresh
+tp trace docs-pass --show raw --lines 10
+tp trace docs-pass --show json
+tp trace docs-pass --show yaml
+tp trace docs-pass --show tsv
+tp trace docs-pass --show formatted
+tp trace docs-pass --show yaml --color always
+```
 
 ## Refresh PR Metadata And Build A Review Dashboard
 

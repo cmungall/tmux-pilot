@@ -34,6 +34,8 @@ METADATA_KEYS = (
     "pr_merge_state",
     "last_refresh",
     "pushing",
+    "trace_agent",
+    "trace_path",
 )
 
 # Map pane_current_command to friendly process names
@@ -644,6 +646,29 @@ def _command_to_agent_fields(command: tuple[str, ...]) -> tuple[str, str]:
     return command[0], " ".join(command[1:])
 
 
+def _infer_trace_agent_from_command(command: str) -> str:
+    """Infer a transcript-backed agent type from a launch command string."""
+    if not command:
+        return ""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+
+    executable = ""
+    for part in parts:
+        if "=" in part and not part.startswith(("/", ".", "~")):
+            continue
+        executable = Path(part).name.lower()
+        break
+
+    if executable == "claude":
+        return "claude-code"
+    if executable in {"claude-code", "codex", "pi"}:
+        return executable
+    return ""
+
+
 def load_profiles(path: Path | None = None) -> dict[str, SessionProfile]:
     """Load configured session profiles from TOML."""
     config_path = path or PROFILE_CONFIG_PATH
@@ -805,6 +830,9 @@ def launch_agent_session(
     prompt_timeout: float = 30.0,
 ) -> None:
     """Launch a shell command in a tmux session and optionally send a prompt."""
+    trace_agent = _infer_trace_agent_from_command(command)
+    if trace_agent:
+        set_metadata(session_name, "trace_agent", trace_agent)
     if expected_cwd:
         _ensure_session_cwd(session_name, expected_cwd)
     send_keys(session_name, command)
@@ -1192,6 +1220,126 @@ def _get_agent_state(
     )
 
 
+def _cache_session_trace(
+    session_name: str,
+    *,
+    agent_type: str,
+    transcript_path: Path,
+    meta: dict[str, str] | None = None,
+) -> None:
+    """Persist a stable transcript binding on the tmux session."""
+    normalized_path = _normalize_directory(str(transcript_path))
+    if not normalized_path:
+        return
+
+    if meta is None or meta.get("trace_agent", "") != agent_type:
+        set_metadata(session_name, "trace_agent", agent_type)
+        if meta is not None:
+            meta["trace_agent"] = agent_type
+    if meta is None or meta.get("trace_path", "") != normalized_path:
+        set_metadata(session_name, "trace_path", normalized_path)
+        if meta is not None:
+            meta["trace_path"] = normalized_path
+
+
+def _resolve_session_trace(
+    session_name: str,
+    *,
+    pane_cmd: str = "",
+    pane_path: str = "",
+    pane_pid: str = "",
+    meta: dict[str, str] | None = None,
+    refresh: bool = False,
+    lines: int = 0,
+) -> dict[str, object]:
+    """Resolve the transcript trace bound to a tmux session."""
+    from . import agent_sessions
+
+    if not pane_cmd and not pane_path and not pane_pid and meta is None:
+        pane_cmd, pane_path, pane_pid, meta = _session_pane_details(session_name)
+    if meta is None:
+        meta = {}
+
+    detected_process = _detect_process(pane_cmd, session_name, pane_pid)
+    agent_type = meta.get("trace_agent", "")
+    if not agent_sessions.is_supported_agent_type(agent_type):
+        agent_type = detected_process if agent_sessions.is_supported_agent_type(detected_process) else ""
+
+    cached_path_str = meta.get("trace_path", "")
+    cached_path = Path(cached_path_str).expanduser() if cached_path_str else None
+    if cached_path is not None:
+        try:
+            cached_path = cached_path.resolve()
+        except OSError:
+            cached_path = cached_path.expanduser()
+    if not agent_type and cached_path is not None and cached_path.exists():
+        agent_type = agent_sessions.infer_transcript_agent_type(cached_path)
+
+    dynamic_agent = detected_process if agent_sessions.is_supported_agent_type(detected_process) else agent_type
+    dynamic_path: Path | None = None
+    if dynamic_agent and pane_path and (refresh or cached_path is None or not cached_path.exists()):
+        dynamic_path = agent_sessions.find_transcript_for_cwd(dynamic_agent, pane_path)
+
+    transcript_path: Path | None = None
+    source = "none"
+    if dynamic_path is not None:
+        transcript_path = dynamic_path
+        source = "dynamic"
+        agent_type = dynamic_agent
+    elif cached_path is not None and cached_path.exists():
+        transcript_path = cached_path
+        source = "cached"
+
+    transcript_state = None
+    transcript_cwd = ""
+    tail: list[str] = []
+    if transcript_path is not None:
+        if agent_type:
+            _cache_session_trace(
+                session_name,
+                agent_type=agent_type,
+                transcript_path=transcript_path,
+                meta=meta,
+            )
+            transcript_state = agent_sessions.read_transcript_state(agent_type, transcript_path)
+        transcript_cwd = agent_sessions.transcript_cwd(transcript_path)
+        tail = agent_sessions.read_transcript_tail(transcript_path, lines=lines)
+
+    return {
+        "session": session_name,
+        "agent": agent_type,
+        "path": _normalize_directory(str(transcript_path)) if transcript_path is not None else "",
+        "source": source,
+        "pane_working_dir": pane_path,
+        "transcript_cwd": transcript_cwd,
+        "state": transcript_state.state if transcript_state is not None else "",
+        "timestamp": transcript_state.timestamp if transcript_state is not None else "",
+        "turn_id": transcript_state.turn_id if transcript_state is not None else "",
+        "tail": tail,
+    }
+
+
+def get_session_trace(
+    name: str,
+    *,
+    refresh: bool = False,
+    lines: int = 0,
+) -> dict[str, object]:
+    """Return the transcript trace bound to a tmux session."""
+    if not session_exists(name):
+        raise RuntimeError(f"Session '{name}' not found")
+    pane_cmd, pane_path, pane_pid, meta = _session_pane_details(name)
+    return _resolve_session_trace(
+        name,
+        pane_cmd=pane_cmd,
+        pane_path=pane_path,
+        pane_pid=pane_pid,
+        meta=meta,
+        refresh=refresh,
+        lines=lines,
+    )
+
+
 def _session_pane_details(name: str) -> tuple[str, str, str, dict[str, str]]:
     """Fetch pane command, path, pid, and metadata in one tmux call."""
     pane_fmt = "#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t" + _META_FMT
@@ -1234,11 +1382,16 @@ def wait_until_session_ready(
     if not session_exists(name):
         raise RuntimeError(f"Session '{name}' not found")
 
-    from . import agent_sessions
-
     pane_cmd, pane_path, pane_pid, _meta = _session_pane_details(name)
     detected_process = _detect_process(pane_cmd, name, pane_pid)
-    transcript_path: Path | None = None
+    trace = _resolve_session_trace(
+        name,
+        pane_cmd=pane_cmd,
+        pane_path=pane_path,
+        pane_pid=pane_pid,
+        meta=_meta,
+    )
+    transcript_path = Path(str(trace["path"])) if trace.get("path") else None
     deadline = time.monotonic() + timeout
 
     while True:
@@ -1251,10 +1404,17 @@ def wait_until_session_ready(
             transcript_path=transcript_path,
         )
 
-        agent_type = agent.get("type")
-        if isinstance(agent_type, str) and pane_path and transcript_path is None:
-            transcript_path = agent_sessions.find_transcript_for_cwd(agent_type, pane_path)
-            if transcript_path is not None:
+        if transcript_path is None:
+            trace = _resolve_session_trace(
+                name,
+                pane_cmd=pane_cmd,
+                pane_path=pane_path,
+                pane_pid=pane_pid,
+                meta=_meta,
+                refresh=True,
+            )
+            if trace.get("path"):
+                transcript_path = Path(str(trace["path"]))
                 agent = _get_agent_state(
                     name,
                     detected_process,
@@ -1380,12 +1540,21 @@ def get_session_status(name: str) -> dict:
         raise RuntimeError(f"Session '{name}' not found")
 
     pane_cmd, pane_path, pane_pid, meta = _session_pane_details(name)
+    trace = _resolve_session_trace(
+        name,
+        pane_cmd=pane_cmd,
+        pane_path=pane_path,
+        pane_pid=pane_pid,
+        meta=meta,
+    )
     metadata_updated_at = _get_metadata_updated_at(name, list(meta))
     scrollback = peek_session(name, lines=5)
+    transcript_path = Path(str(trace["path"])) if trace.get("path") else None
     agent = _get_agent_state(
         name,
         _detect_process(pane_cmd, name, pane_pid),
         pane_path=pane_path,
+        transcript_path=transcript_path,
     )
 
     return {
@@ -1397,4 +1566,5 @@ def get_session_status(name: str) -> dict:
         "metadata_updated_at": metadata_updated_at,
         "scrollback_tail": scrollback,
         "agent": agent,
+        "trace": trace,
     }

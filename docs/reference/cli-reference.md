@@ -12,6 +12,7 @@ This page is the compact command reference for `tp`. For longer walkthroughs, us
 | `tp send` | send the next instruction into a live session |
 | `tp jump` | attach or switch to a session |
 | `tp status` | inspect process, cwd, metadata, and recent output |
+| `tp trace` | inspect the transcript trace bound to a session |
 | `tp clean` | remove done-ish sessions and their worktrees |
 | `tp kill` | kill a session immediately |
 | `tp set` / `tp get` | manage tmux-backed session metadata |
@@ -132,8 +133,33 @@ tp status docs-pass
 - working directory
 - tmux metadata
 - metadata freshness for cached fields such as PR state
+- cached trace metadata when a transcript has been resolved
 - current agent state
 - recent scrollback
+
+## `tp trace`
+
+```bash
+tp trace docs-pass
+tp trace docs-pass --refresh
+tp trace docs-pass --json
+tp trace docs-pass --show raw --lines 10
+tp trace docs-pass --show json
+tp trace docs-pass --show yaml
+tp trace docs-pass --show tsv
+tp trace docs-pass --show formatted
+tp trace docs-pass --show yaml --color always
+```
+
+`tp trace` resolves the transcript associated with a session, preferring cached `@trace_agent` / `@trace_path` metadata and falling back to a cwd-based scan when needed. This is the command to use when you want to verify which chat/session trace a tmux session is actually bound to.
+
+- `--json` prints the trace binding metadata as JSON
+- `--show raw` prints raw JSONL lines from the transcript
+- `--show json` pretty-prints transcript records as a JSON array
+- `--show yaml` renders transcript records in a YAML-like view
+- `--show tsv` emits normalized transcript rows with tab-separated columns
+- `--show formatted` renders a readable timestamped transcript timeline
+- `--color auto|always|never` controls ANSI color for `--show raw|json|yaml|formatted`
 
 ## `tp clean`
 
@@ -176,6 +202,15 @@ tp refresh --json
 ```
 
 `tp refresh` updates cached PR metadata only. It writes `@pr`, `@pr_state`, `@pr_review`, `@pr_merge_state`, and `@last_refresh`, but it does not kill sessions, remove worktrees, or delete branches.
+
+## Trace Metadata
+
+When `tp` resolves a transcript for a session, it caches:
+
+- `@trace_agent`
+- `@trace_path`
+
+These cached fields are visible in `tp status`, `tp ls --all-metadata`, and `tp ls --json`.
 
 ## `tp reap`
 

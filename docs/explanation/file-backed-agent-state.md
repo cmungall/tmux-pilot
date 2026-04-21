@@ -18,6 +18,8 @@ The transcript tells `tp` whether the agent is running or has finished a turn. T
 
 `tp send --wait` only proceeds when both conditions line up.
 
+To keep one tmux session associated with one agent/chat trace, `tp` now also caches the resolved transcript binding on the session itself. Once a transcript has been resolved, later checks can reuse that binding instead of re-discovering it purely from cwd every time.
+
 ## Why transcripts
 
 Structured transcript files are more stable than terminal text. They survive scrollback truncation and expose agent events directly instead of forcing `tp` to infer state from visible strings.
@@ -26,6 +28,9 @@ Current supported sources:
 
 - Codex transcripts under `$CODEX_HOME/sessions` or `~/.codex/sessions`
 - Claude Code transcripts under `CLAUDE_PROJECTS_DIR` or `~/.claude/projects`
+- Pi session files under `PI_CODING_AGENT_DIR/sessions` or the built-in worktree-local `.tmux-pilot/pi/sessions`
+
+The initial discovery path is still cwd-based, but it now feeds a cached session binding (`@trace_agent`, `@trace_path`) that can be inspected with `tp trace`.
 
 ## Why keep tmux pane checks
 
@@ -47,4 +52,5 @@ Real-world use has clarified a few product boundaries:
 - `tp new --agent "codex --profile yolo --no-alt-screen"` plus `tp send --wait` is a meaningful improvement over the older one-shot send model.
 - Codex trust prompts are normal in brand-new repos and worktrees. They should be treated as an explicit product state, not hand-waved away as a transient glitch.
 - Session metadata alone is not enough to trust launch correctness. `tp` must verify the live pane cwd before and immediately after agent launch, because a shell or agent can drift away from the requested directory while metadata still looks correct.
+- Once a transcript has been discovered, the session should keep using that trace as its stable binding. This gives orchestrators a durable handle for future features such as conversation summaries and richer state inspection.
 - Low-level setup commands and first-class worktree-aware creation are still missing features. When users need them, that should be recorded as a blocker or roadmap item rather than normalized as a permanent shell-script workaround.
