@@ -1,6 +1,6 @@
 # Agent State Reference
 
-This page documents the current agent-state and readiness behavior used by `tp status`, `tp ls --json`, and `tp send --wait`.
+This page documents the current agent-state and readiness behavior used by `tp status`, `tp trace`, `tp ls --json`, and `tp send --wait`.
 
 ## `tp send --wait`
 
@@ -47,6 +47,10 @@ States that are not first-class yet:
 Relevant keys for steering:
 
 - `last_send`: updated after a successful `tp send`
+- `trace_agent`: cached transcript-backed agent type for the session
+- `trace_path`: cached transcript path bound to the session
+
+`tp` now prefers a cached session trace binding when it exists. If no cached binding is present, it falls back to matching the tmux pane cwd against transcript `cwd` data and then caches the result for later status and wait checks.
 
 ## Transcript sources
 
@@ -54,13 +58,13 @@ Relevant keys for steering:
 
 - transcript root: `$CODEX_HOME/sessions`
 - default root when unset: `~/.codex/sessions`
-- session matching: tmux pane working directory to transcript `cwd`
+- first match strategy: cached `@trace_path`, then tmux pane working directory to transcript `cwd`
 
 ### Claude Code
 
 - transcript root: `CLAUDE_PROJECTS_DIR`
 - default root when unset: `~/.claude/projects`
-- session matching: tmux pane working directory to transcript `cwd`
+- first match strategy: cached `@trace_path`, then tmux pane working directory to transcript `cwd`
 
 `CLAUDE_PROJECTS_DIR` is primarily useful for tests or nonstandard layouts. Claude Code itself normally writes under `~/.claude/projects`.
 
@@ -69,7 +73,7 @@ Relevant keys for steering:
 - default transcript root: `~/.pi/agent/sessions/--<cwd>--`
 - configurable root: `PI_CODING_AGENT_DIR/sessions/--<cwd>--`
 - built-in `tp` profile root: `{worktree}/.tmux-pilot/pi/sessions`
-- session matching: tmux pane working directory to session header `cwd`
+- first match strategy: cached `@trace_path`, then tmux pane working directory to session header `cwd`
 
 ## Agent-specific behavior
 
@@ -102,6 +106,10 @@ If no session file is available yet, `tp` falls back to the visible Pi footer an
 ### Generic agents
 
 Generic sessions do not have file-backed state. `tp` uses pane heuristics only.
+
+## Trace Inspection
+
+Use `tp trace NAME` when you want the exact transcript binding a session is using. This is especially helpful if the pane cwd and the agent's effective working trace have diverged.
 
 ## Known gaps
 

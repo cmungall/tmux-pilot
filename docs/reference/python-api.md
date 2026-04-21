@@ -64,6 +64,7 @@ Useful `core` helpers for automation:
 - `create_profile_session(...)`
 - `wait_until_session_ready(...)`
 - `get_session_status(...)`
+- `get_session_trace(...)`
 - `kill_session(...)`
 
 ## Install Or Remove Git Hooks
@@ -95,6 +96,15 @@ from tmux_pilot import reaper
 
 result = reaper.refresh_pr_metadata(repo="myapp")
 print(result)
+```
+
+## Inspect A Session Trace
+
+```python
+from tmux_pilot import core
+
+trace = core.get_session_trace("docs-pass", refresh=False, lines=5)
+print(trace["agent"], trace["path"])
 ```
 
 ## Recommendation

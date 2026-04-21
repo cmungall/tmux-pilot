@@ -56,6 +56,16 @@ def test_find_codex_transcript_for_cwd_prefers_most_recent_match(tmp_path: Path)
     assert found == newer
 
 
+def test_infer_transcript_agent_type_detects_codex(tmp_path: Path):
+    transcript = tmp_path / "sessions" / "rollout.jsonl"
+    _write(
+        transcript,
+        ['{"timestamp":"2026-03-29T20:00:00Z","type":"session_meta","payload":{"cwd":"/tmp/project"}}\n'],
+    )
+
+    assert agent_sessions.infer_transcript_agent_type(transcript) == "codex"
+
+
 def test_find_claude_transcript_for_cwd_prefers_most_recent_match(tmp_path: Path):
     root = tmp_path / "projects"
     older = root / "-tmp-project" / "older.jsonl"
@@ -252,3 +262,41 @@ def test_read_pi_transcript_state_reports_completed_from_assistant_stop(tmp_path
         timestamp="2026-03-29T20:00:03Z",
         turn_id="msg-2",
     )
+
+
+def test_read_transcript_tail_returns_latest_lines(tmp_path: Path):
+    transcript = tmp_path / "sessions" / "rollout.jsonl"
+    _write(
+        transcript,
+        [
+            '{"line":1}\n',
+            '{"line":2}\n',
+            '{"line":3}\n',
+        ],
+    )
+
+    assert agent_sessions.read_transcript_tail(transcript, lines=2) == ['{"line":2}', '{"line":3}']
+
+
+def test_read_transcript_records_reads_latest_claude_records(tmp_path: Path):
+    transcript = tmp_path / "projects" / "-tmp-project" / "session.jsonl"
+    _write(
+        transcript,
+        [
+            '{"cwd":"/tmp/project","sessionId":"claude-1","type":"user","message":{"role":"user","content":"hello"},"uuid":"msg-1","timestamp":"2026-03-29T20:00:00Z"}\n',
+            '{"cwd":"/tmp/project","sessionId":"claude-1","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]},"uuid":"msg-2","timestamp":"2026-03-29T20:00:01Z"}\n',
+        ],
+    )
+
+    records = agent_sessions.read_transcript_records(transcript, limit=1)
+
+    assert records == [
+        {
+            "cwd": "/tmp/project",
+            "sessionId": "claude-1",
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+            "uuid": "msg-2",
+            "timestamp": "2026-03-29T20:00:01Z",
+        }
+    ]

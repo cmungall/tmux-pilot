@@ -9,7 +9,7 @@ import sys
 
 from pathlib import Path
 
-from . import core, display, hooks
+from . import agent_sessions, core, display, hooks
 
 
 _NEW_DESCRIPTION = """Create a tmux session.
@@ -195,6 +195,412 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(str(e), file=sys.stderr)
         sys.exit(1)
     print(display.format_status(info))
+
+
+_ANSI_RESET = "\033[0m"
+_ANSI_KEY = "\033[36m"
+_ANSI_STRING = "\033[32m"
+_ANSI_NUMBER = "\033[33m"
+_ANSI_BOOL = "\033[35m"
+_ANSI_NULL = "\033[2m"
+
+
+def _style(text: str, code: str, *, color: bool) -> str:
+    if not color:
+        return text
+    return f"{code}{text}{_ANSI_RESET}"
+
+
+def _json_scalar(value: object, *, color: bool) -> str:
+    if isinstance(value, str):
+        return _style(json.dumps(value, ensure_ascii=False), _ANSI_STRING, color=color)
+    if isinstance(value, bool):
+        return _style("true" if value else "false", _ANSI_BOOL, color=color)
+    if value is None:
+        return _style("null", _ANSI_NULL, color=color)
+    return _style(json.dumps(value, ensure_ascii=False), _ANSI_NUMBER, color=color)
+
+
+def _json_key(value: str, *, color: bool) -> str:
+    return _style(json.dumps(value, ensure_ascii=False), _ANSI_KEY, color=color)
+
+
+def _json_inline(value: object, *, color: bool) -> str:
+    if isinstance(value, dict):
+        items = [f"{_json_key(str(key), color=color)}: {_json_inline(child, color=color)}" for key, child in value.items()]
+        return "{" + ", ".join(items) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_json_inline(item, color=color) for item in value) + "]"
+    return _json_scalar(value, color=color)
+
+
+def _json_dump(value: object, *, indent: int = 0, color: bool = False) -> list[str]:
+    prefix = " " * indent
+
+    if isinstance(value, dict):
+        if not value:
+            return [f"{prefix}{{}}"]
+        lines = [f"{prefix}{{"]
+        items = list(value.items())
+        for index, (key, child) in enumerate(items):
+            comma = "," if index < len(items) - 1 else ""
+            nested = _json_dump(child, indent=indent + 2, color=color)
+            if len(nested) == 1:
+                lines.append(f"{' ' * (indent + 2)}{_json_key(str(key), color=color)}: {nested[0].lstrip()}{comma}")
+            else:
+                lines.append(f"{' ' * (indent + 2)}{_json_key(str(key), color=color)}: {nested[0].lstrip()}")
+                lines.extend(nested[1:])
+                lines[-1] += comma
+        lines.append(f"{prefix}}}")
+        return lines
+
+    if isinstance(value, list):
+        if not value:
+            return [f"{prefix}[]"]
+        lines = [f"{prefix}["]
+        for index, item in enumerate(value):
+            comma = "," if index < len(value) - 1 else ""
+            nested = _json_dump(item, indent=indent + 2, color=color)
+            if len(nested) == 1:
+                lines.append(f"{' ' * (indent + 2)}{nested[0].lstrip()}{comma}")
+            else:
+                lines.extend(nested)
+                lines[-1] += comma
+        lines.append(f"{prefix}]")
+        return lines
+
+    return [f"{prefix}{_json_scalar(value, color=color)}"]
+
+
+def _yaml_scalar(value: object, *, color: bool) -> str:
+    if isinstance(value, str):
+        return _style(json.dumps(value, ensure_ascii=False), _ANSI_STRING, color=color)
+    if isinstance(value, bool):
+        return _style("true" if value else "false", _ANSI_BOOL, color=color)
+    if value is None:
+        return _style("null", _ANSI_NULL, color=color)
+    return _style(json.dumps(value, ensure_ascii=False), _ANSI_NUMBER, color=color)
+
+
+def _yaml_dump(value: object, *, indent: int = 0, color: bool = False) -> list[str]:
+    prefix = " " * indent
+
+    if isinstance(value, dict):
+        if not value:
+            return [f"{prefix}{{}}"]
+        lines: list[str] = []
+        for key, child in value.items():
+            if isinstance(child, (dict, list)):
+                lines.append(f"{prefix}{_style(str(key), _ANSI_KEY, color=color)}:")
+                lines.extend(_yaml_dump(child, indent=indent + 2, color=color))
+            else:
+                lines.append(f"{prefix}{_style(str(key), _ANSI_KEY, color=color)}: {_yaml_scalar(child, color=color)}")
+        return lines
+
+    if isinstance(value, list):
+        if not value:
+            return [f"{prefix}[]"]
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                nested = _yaml_dump(item, indent=indent + 2, color=color)
+                first = nested[0].lstrip()
+                lines.append(f"{prefix}- {first}")
+                lines.extend(f"{prefix}  {line.lstrip()}" for line in nested[1:])
+            else:
+                lines.append(f"{prefix}- {_yaml_scalar(item, color=color)}")
+        return lines
+
+    return [f"{prefix}{_yaml_scalar(value, color=color)}"]
+
+
+def _should_use_color(mode: str) -> bool:
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return sys.stdout.isatty()
+
+
+def _compact_text(text: object) -> str:
+    if text is None:
+        return ""
+    if isinstance(text, str):
+        return " ".join(text.split())
+    return " ".join(str(text).split())
+
+
+def _item_summary(item: object) -> str:
+    if isinstance(item, str):
+        return _compact_text(item)
+    if not isinstance(item, dict):
+        return _compact_text(item)
+
+    item_type = item.get("type")
+    if item_type == "text":
+        return _compact_text(item.get("text", ""))
+    if item_type == "tool_use":
+        name = _compact_text(item.get("name", "tool"))
+        tool_input = item.get("input")
+        if isinstance(tool_input, dict):
+            command = _compact_text(tool_input.get("command", ""))
+            if command:
+                return f"tool {name}: {command}"
+        return f"tool {name}"
+    if item_type == "toolCall":
+        name = _compact_text(item.get("name", "tool"))
+        arguments = item.get("arguments")
+        if isinstance(arguments, dict):
+            command = _compact_text(arguments.get("command", ""))
+            if command:
+                return f"tool {name}: {command}"
+        return f"tool {name}"
+    return _compact_text(json.dumps(item, ensure_ascii=False, sort_keys=True))
+
+
+def _content_summary(content: object) -> str:
+    if isinstance(content, list):
+        parts = [_item_summary(item) for item in content]
+        return " | ".join(part for part in parts if part)
+    if isinstance(content, dict):
+        return _compact_text(json.dumps(content, ensure_ascii=False, sort_keys=True))
+    return _compact_text(content)
+
+
+def _payload_summary(payload: object) -> str:
+    if isinstance(payload, dict):
+        if "content" in payload:
+            summary = _content_summary(payload.get("content"))
+            if summary:
+                return summary
+        if "cwd" in payload:
+            cwd = _compact_text(payload.get("cwd", ""))
+            if cwd:
+                return f"cwd={cwd}"
+        return _compact_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return _compact_text(payload)
+
+
+def _normalize_trace_record(agent_type: str, record: dict) -> dict[str, str]:
+    timestamp = _compact_text(record.get("timestamp", ""))
+    turn_id = _compact_text(record.get("turn_id") or record.get("uuid") or record.get("id") or "")
+    kind = _compact_text(record.get("type", "")) or "record"
+    role = ""
+    summary = ""
+
+    if agent_type == "codex":
+        if kind in {"session_meta", "turn_context"}:
+            role = "session" if kind == "session_meta" else "context"
+            summary = _payload_summary(record.get("payload", {}))
+        elif kind == "event_msg":
+            role = "event"
+            payload = record.get("payload", {})
+            if isinstance(payload, dict):
+                event_type = _compact_text(payload.get("type", "event"))
+                turn_id = _compact_text(payload.get("turn_id", "")) or turn_id
+                reason = _compact_text(payload.get("reason", ""))
+                summary = event_type
+                if reason:
+                    summary = f"{summary} ({reason})"
+            else:
+                summary = _payload_summary(payload)
+        else:
+            summary = _payload_summary(record.get("payload", record))
+    elif agent_type == "claude-code":
+        message = record.get("message", {})
+        if isinstance(message, dict):
+            role = _compact_text(message.get("role", kind))
+            summary = _content_summary(message.get("content"))
+        if not summary:
+            summary = _payload_summary(record)
+    elif agent_type == "pi":
+        if kind == "session":
+            role = "session"
+            cwd = _compact_text(record.get("cwd", ""))
+            summary = f"cwd={cwd}" if cwd else _payload_summary(record)
+        elif kind == "message":
+            message = record.get("message", {})
+            if isinstance(message, dict):
+                role = _compact_text(message.get("role", "message"))
+                summary = _content_summary(message.get("content"))
+                stop_reason = _compact_text(message.get("stopReason", ""))
+                if stop_reason and stop_reason not in {"stop"}:
+                    summary = f"{summary} ({stop_reason})" if summary else stop_reason
+            if not summary:
+                summary = _payload_summary(record)
+        else:
+            summary = _payload_summary(record)
+    else:
+        if kind == "event_msg":
+            role = "event"
+            payload = record.get("payload", {})
+            if isinstance(payload, dict):
+                summary = _compact_text(payload.get("type", "event"))
+                turn_id = _compact_text(payload.get("turn_id", "")) or turn_id
+            else:
+                summary = _payload_summary(payload)
+        else:
+            message = record.get("message")
+            if isinstance(message, dict):
+                role = _compact_text(message.get("role", kind))
+                summary = _content_summary(message.get("content"))
+            if not summary:
+                summary = _payload_summary(record.get("payload", record))
+
+    return {
+        "timestamp": timestamp,
+        "kind": kind or "-",
+        "role": role or "-",
+        "turn_id": turn_id or "-",
+        "summary": summary or "-",
+    }
+
+
+def _trace_rows(trace: dict[str, object], *, lines: int, all_records: bool) -> list[dict[str, str]]:
+    path = str(trace.get("path", "") or "")
+    if not path:
+        return []
+
+    transcript_path = Path(path)
+    record_limit = None if all_records else (lines if lines > 0 else 20)
+    records = agent_sessions.read_transcript_records(transcript_path, limit=record_limit)
+    agent_type = _compact_text(trace.get("agent", "")) or agent_sessions.infer_transcript_agent_type(transcript_path)
+    return [_normalize_trace_record(agent_type, record) for record in records]
+
+
+def _trace_tsv(rows: list[dict[str, str]]) -> str:
+    header = ["timestamp", "kind", "role", "turn_id", "summary"]
+    out = ["\t".join(header)]
+    for row in rows:
+        out.append("\t".join(row[field].replace("\t", " ") for field in header))
+    return "\n".join(out)
+
+
+def _role_style(label: str, *, color: bool) -> str:
+    palette = {
+        "user": _ANSI_STRING,
+        "assistant": _ANSI_KEY,
+        "event": _ANSI_NUMBER,
+        "session": _ANSI_BOOL,
+        "context": _ANSI_NULL,
+        "toolresult": _ANSI_NUMBER,
+        "bashexecution": _ANSI_NUMBER,
+    }
+    code = palette.get(label.lower(), _ANSI_KEY)
+    return _style(label, code, color=color)
+
+
+def _trace_formatted(rows: list[dict[str, str]], *, color: bool) -> str:
+    if not rows:
+        return ""
+    width = max(len(row["role"]) for row in rows)
+    lines = []
+    for row in rows:
+        label = row["role"]
+        if label == "-" and row["kind"] != "-":
+            label = row["kind"]
+        turn = "" if row["turn_id"] in {"", "-"} else f" [{row['turn_id']}]"
+        lines.append(
+            f"{row['timestamp'] or '-'}  {_role_style(label.ljust(width), color=color)}{turn}  {row['summary']}"
+        )
+    return "\n".join(lines)
+
+
+def _trace_content(
+    trace: dict[str, object],
+    *,
+    show: str,
+    lines: int,
+    all_records: bool,
+    color: bool,
+) -> str:
+    path = str(trace.get("path", "") or "")
+    if not path:
+        return ""
+
+    transcript_path = Path(path)
+    if show == "raw":
+        if color:
+            record_limit = None if all_records else (lines if lines > 0 else 20)
+            records = agent_sessions.read_transcript_records(transcript_path, limit=record_limit)
+            return "\n".join(_json_inline(record, color=True) for record in records)
+        if all_records:
+            try:
+                return transcript_path.read_text(encoding="utf-8", errors="replace").rstrip()
+            except OSError:
+                return ""
+        limit = lines if lines > 0 else 20
+        return "\n".join(agent_sessions.read_transcript_tail(transcript_path, lines=limit))
+
+    record_limit = None if all_records else (lines if lines > 0 else 20)
+    records = agent_sessions.read_transcript_records(transcript_path, limit=record_limit)
+    if show == "json":
+        return "\n".join(_json_dump(records, color=color))
+    if show == "yaml":
+        return "\n".join(_yaml_dump(records, color=color))
+    if show == "tsv":
+        return _trace_tsv(_trace_rows(trace, lines=lines, all_records=all_records))
+    if show == "formatted":
+        return _trace_formatted(_trace_rows(trace, lines=lines, all_records=all_records), color=color)
+    return ""
+
+
+def cmd_trace(args: argparse.Namespace) -> None:
+    try:
+        trace = core.get_session_trace(
+            args.name,
+            refresh=args.refresh,
+            lines=args.lines if args.show == "summary" else 0,
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        print(json.dumps(trace, indent=2))
+        return
+
+    path = str(trace.get("path", "") or "")
+    if not path:
+        print(f"No transcript trace found for session '{args.name}'.")
+        return
+
+    if args.show != "summary":
+        content = _trace_content(
+            trace,
+            show=args.show,
+            lines=args.lines,
+            all_records=args.all,
+            color=_should_use_color(args.color),
+        )
+        if content:
+            print(content)
+        return
+
+    lines = [
+        f"Session:    {trace['session']}",
+        f"Agent:      {trace.get('agent', '') or '-'}",
+        f"Binding:    {trace.get('source', '') or '-'}",
+        f"Pane Dir:   {trace.get('pane_working_dir', '') or '-'}",
+        f"Trace Dir:  {trace.get('transcript_cwd', '') or '-'}",
+        f"Path:       {path}",
+    ]
+    if trace.get("state"):
+        lines.append(f"State:      {trace['state']}")
+    if trace.get("timestamp"):
+        lines.append(f"Last Event: {trace['timestamp']}")
+    if trace.get("turn_id"):
+        lines.append(f"Turn:       {trace['turn_id']}")
+
+    tail = trace.get("tail", [])
+    if isinstance(tail, list) and tail:
+        lines.append("")
+        lines.append("Tail:")
+        lines.append("─" * 60)
+        lines.extend(str(line) for line in tail)
+        lines.append("─" * 60)
+
+    print("\n".join(lines))
 
 
 def cmd_kill(args: argparse.Namespace) -> None:
@@ -441,6 +847,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="Detailed session status")
     p_status.add_argument("name", help="Session name")
 
+    # trace
+    p_trace = sub.add_parser("trace", help="Inspect the transcript trace bound to a session")
+    p_trace.add_argument("name", help="Session name")
+    p_trace.add_argument("--refresh", action="store_true", help="Rescan by pane cwd before falling back to cached trace metadata")
+    p_trace.add_argument("--json", action="store_true", help="Output trace info as JSON")
+    p_trace.add_argument(
+        "--show",
+        choices=("summary", "raw", "json", "yaml", "tsv", "formatted"),
+        default="summary",
+        help="Show the trace summary or render transcript content as raw JSONL, pretty JSON, YAML, TSV, or a formatted timeline",
+    )
+    p_trace.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Colorize human transcript output when using --show raw|json|yaml",
+    )
+    p_trace.add_argument("-n", "--lines", type=int, default=0, help="Show the last N transcript lines or records")
+    p_trace.add_argument("--all", action="store_true", help="Show the full transcript instead of the last N lines or records")
+
     # clean
     p_clean = sub.add_parser("clean", help="Bulk cleanup of done-ish sessions + worktrees")
     p_clean.add_argument("name", nargs="?", default=None, help="Clean a specific session")
@@ -503,6 +929,7 @@ def main(argv: list[str] | None = None) -> None:
         "send": cmd_send,
         "jump": cmd_jump,
         "status": cmd_status,
+        "trace": cmd_trace,
         "clean": cmd_clean,
         "kill": cmd_kill,
         "set": cmd_set,

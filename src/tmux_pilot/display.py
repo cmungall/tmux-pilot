@@ -25,6 +25,8 @@ _ALL_METADATA_COLUMN_NAMES = [
     "MERGE_STATE",
     "LAST_REFRESH",
     "PUSHING",
+    "TRACE_AGENT",
+    "TRACE_PATH",
 ]
 
 # All available columns: (long_name, mnemonic, accessor)
@@ -49,6 +51,8 @@ ALL_COLUMNS: list[tuple[str, str, ColumnAccessor]] = [
     ("LAST_SEND", "L", lambda s: s.metadata.get("last_send", "") or "-"),
     ("LAST_REFRESH", "F", lambda s: s.metadata.get("last_refresh", "") or "-"),
     ("PUSHING", "U", lambda s: s.metadata.get("pushing", "") or "-"),
+    ("TRACE_AGENT", "C", lambda s: s.metadata.get("trace_agent", "") or "-"),
+    ("TRACE_PATH", "H", lambda s: _shorten_path(s.metadata.get("trace_path", "")) or "-"),
 ]
 
 _COL_BY_MNEMONIC = {m: (name, acc) for name, m, acc in ALL_COLUMNS}
