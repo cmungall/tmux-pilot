@@ -53,6 +53,23 @@ def test_builtin_codex_profile_matches_send_wait_timeout(tmp_path):
     assert profile is not None
     assert profile.prompt_wait_timeout == 30.0
 
+def test_prod_section_is_not_treated_as_a_profile(tmp_path):
+    config = tmp_path / "profiles.toml"
+    config.write_text(
+        """
+[default]
+extends = "codex"
+
+[prod]
+default_wait = true
+"""
+    )
+
+    profiles = core.load_profiles(config)
+
+    assert "default" in profiles
+    assert "prod" not in profiles
+
 
 def test_should_use_profile_mode_applies_default_profile_with_directory(tmp_path):
     config = tmp_path / "profiles.toml"
@@ -64,6 +81,93 @@ command = ["codex", "--profile", "yolo"]
     )
 
     assert core.should_use_profile_mode(directory=str(tmp_path), path=config) is True
+
+
+def test_load_prod_config_parses_rules(tmp_path):
+    config = tmp_path / "profiles.toml"
+    config.write_text(
+        """
+[prod]
+refresh = false
+
+[[prod.rules]]
+name = "changes-requested"
+match = { pr_review = "CHANGES_REQUESTED", pr_state = "OPEN" }
+prompt = "Address all requested changes on {pr_display} for {name}."
+
+[[prod.rules]]
+name = "merge-blocked"
+match = { pr_merge_state = ["BLOCKED", "DIRTY"] }
+prompt = "Unblock mergeability for {branch}."
+"""
+    )
+
+    prod = core.load_prod_config(config)
+
+    assert prod.refresh is False
+    assert len(prod.rules) == 2
+    assert prod.rules[0].match == {
+        "pr_review": ("CHANGES_REQUESTED",),
+        "pr_state": ("OPEN",),
+    }
+    assert prod.rules[1].match == {"pr_merge_state": ("BLOCKED", "DIRTY")}
+
+
+def test_plan_prod_actions_uses_first_matching_rule(tmp_path, monkeypatch):
+    config = tmp_path / "profiles.toml"
+    config.write_text(
+        """
+[prod]
+refresh = false
+
+[[prod.rules]]
+name = "changes-requested"
+match = { pr_review = "CHANGES_REQUESTED" }
+prompt = "Address review feedback on {pr_display} for {name}."
+
+[[prod.rules]]
+name = "open-pr"
+match = { pr_state = "OPEN" }
+prompt = "General follow-up for {name}."
+"""
+    )
+
+    monkeypatch.setattr(
+        core,
+        "resolve_sessions",
+        lambda **kwargs: [
+            core.SessionInfo(
+                name="dragon-assign",
+                process="codex",
+                working_dir="/tmp/dragon-assign",
+                metadata={
+                    "branch": "feat/dragon-ai-assignment-trigger",
+                    "pr": "1614",
+                    "pr_state": "OPEN",
+                    "pr_review": "CHANGES_REQUESTED",
+                    "pr_merge_state": "BLOCKED",
+                },
+            )
+        ],
+    )
+
+    actions = core.plan_prod_actions(config_path=config)
+
+    assert actions == [
+        {
+            "session": "dragon-assign",
+            "process": "codex",
+            "branch": "feat/dragon-ai-assignment-trigger",
+            "pr": "1614",
+            "pr_state": "OPEN",
+            "pr_review": "CHANGES_REQUESTED",
+            "pr_merge_state": "BLOCKED",
+            "skipped": False,
+            "reason": "",
+            "rule": "changes-requested",
+            "prompt": "Address review feedback on #1614 for dragon-assign.",
+        }
+    ]
 
 
 def test_create_profile_session_creates_worktree_launches_agent_and_prompt(monkeypatch, tmp_path):

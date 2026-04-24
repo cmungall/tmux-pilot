@@ -21,6 +21,11 @@ from tmux_pilot import __version__
 print(__version__)
 ```
 
+`__version__` comes from the installed package metadata, with a git-describe
+fallback when you import directly from a source checkout. In tagged or post-tag
+git builds, it follows the git-derived version computed by the release tooling
+rather than a hardcoded string in the source tree.
+
 ## List Sessions
 
 ```python

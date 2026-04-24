@@ -53,6 +53,9 @@ tp ls --cols NAME,PR,STATUS,DIR
 # Inspect the transcript trace bound to a session
 tp trace auth-flow
 
+# Turn PR state into the next follow-up prompt
+tp prod --dry-run --repo myapp
+
 # Peek at output without attaching
 tp peek auth-flow -n 30
 
@@ -205,6 +208,17 @@ extends = "codex"
 repo = "~/repos/myapp"
 branch_prefix = "feat"
 base_ref = "origin/main"
+
+[prod]
+[[prod.rules]]
+name = "changes-requested"
+match = { pr_review = "CHANGES_REQUESTED", pr_state = "OPEN" }
+prompt = "Address all requested review comments on {pr_display}. Re-check each thread, update tests, and push the fixes."
+
+[[prod.rules]]
+name = "merge-blocked"
+match = { pr_state = "OPEN", pr_merge_state = ["BLOCKED", "DIRTY"] }
+prompt = "Your PR {pr_display} is not mergeable. Resolve the conflicts or other merge blockers, then push an update."
 ```
 
 `extends` can target another configured profile or one of the built-in profiles above. Config values override the inherited profile, so you can keep reusable agent defaults separate from repo-specific task defaults.
@@ -242,6 +256,19 @@ tp send NAME "any command"     # sends text + Enter
 tp send --wait NAME "follow-up instruction"
 tp send NAME "claude-code --print 'fix the auth bug'"
 ```
+
+### `tp prod` — Send configured follow-up prompts
+
+```bash
+tp prod                        # all sessions, auto-refresh first
+tp prod dragon-assign          # one named session
+tp prod --repo dismech         # repo-scoped subset
+tp prod --dry-run --repo myapp # preview prompts without sending
+tp prod --json                 # machine-readable plan
+tp prod --wait dragon-assign   # opt into wait-until-ready before sending
+```
+
+`tp prod` reads `[prod]` rules from `~/.config/tmux-pilot/profiles.toml`, refreshes PR metadata by default, picks the first matching rule for each targeted session, renders its prompt template, and sends it via plain `tp send` semantics. Use `--no-refresh` to rely on cached metadata instead. Pass `--wait` only when you explicitly want to wait for readiness before sending.
 
 ### `tp jump` — Attach or switch to a session
 
@@ -301,6 +328,15 @@ tp refresh --json               # machine-readable output
 ```
 
 `tp refresh` updates `@pr`, `@pr_state`, `@pr_review`, `@pr_merge_state`, and `@last_refresh` in tmux metadata. It does not kill sessions, remove worktrees, or delete branches.
+
+`tp prod` builds directly on those cached fields, so the common orchestration loop is:
+
+```bash
+tp refresh --repo myapp
+tp ls --cols NAME,PR,STATUS,DIR --repo myapp
+tp prod --dry-run --repo myapp
+tp prod --repo myapp
+```
 
 ### `tp set` / `tp get` — Session metadata
 

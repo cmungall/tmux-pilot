@@ -96,6 +96,11 @@ Supported fields:
 - `agent`: legacy alias for `command`; still accepted
 - `agent_args`: legacy stable flags appended to `agent`; still accepted
 
+`profiles.toml` can also carry orchestration rules for `tp prod`:
+
+- `[prod].refresh`: whether `tp prod` refreshes PR metadata before matching rules
+- `[[prod.rules]]`: ordered first-match rules with `match = {...}` and `prompt = "..."`
+
 ## Option Semantics
 
 - `--agent`: command to launch in the session, such as `claude`, `claude-code`, or `codex`

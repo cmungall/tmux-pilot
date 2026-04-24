@@ -10,6 +10,7 @@ This page is the compact command reference for `tp`. For longer walkthroughs, us
 | `tp new` | create a bare session or a profile-backed task session |
 | `tp peek` | view recent scrollback without attaching |
 | `tp send` | send the next instruction into a live session |
+| `tp prod` | send configured follow-up prompts based on PR/session state |
 | `tp jump` | attach or switch to a session |
 | `tp status` | inspect process, cwd, metadata, and recent output |
 | `tp trace` | inspect the transcript trace bound to a session |
@@ -111,6 +112,37 @@ tp send docs-pass "summarize the failing tests"
 tp send --wait docs-pass "write regression coverage for the callback"
 tp send --wait --timeout 90 docs-pass "continue with the next failure"
 ```
+
+## `tp prod`
+
+```bash
+tp prod
+tp prod dragon-assign
+tp prod --repo myapp
+tp prod --dry-run --repo myapp
+tp prod --json
+tp prod --no-refresh
+tp prod --wait dragon-assign
+```
+
+`tp prod` reads `[prod]` rules from `~/.config/tmux-pilot/profiles.toml`, refreshes PR metadata by default, and picks the first matching rule for each session. By default it sends immediately; pass `--wait` when you explicitly want readiness checks first.
+
+Example config:
+
+```toml
+[prod]
+[[prod.rules]]
+name = "changes-requested"
+match = { pr_review = "CHANGES_REQUESTED", pr_state = "OPEN" }
+prompt = "Address all requested review comments on {pr_display}, update tests as needed, and push the fixes."
+
+[[prod.rules]]
+name = "merge-blocked"
+match = { pr_state = "OPEN", pr_merge_state = ["BLOCKED", "DIRTY"] }
+prompt = "Your PR {pr_display} is not mergeable. Resolve the merge blockers, then push an update."
+```
+
+Available match/template fields include the session name plus flattened metadata such as `repo`, `branch`, `desc`, `status`, `pr`, `pr_state`, `pr_review`, and `pr_merge_state`.
 
 ## `tp jump`
 

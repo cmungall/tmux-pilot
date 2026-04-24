@@ -116,6 +116,8 @@ tp kill docs-pass
 
 Use `tp refresh` before `tp ls` when you want a current review dashboard. The compact `PR` column folds together the PR number plus short review/merge codes such as `A`, `CR`, `RR`, `D`, and `C`.
 
+When you want the next follow-up prompt to be driven by cached PR state instead of hand-written each time, use `tp prod --dry-run` to preview the configured prod rules and `tp prod` to send them.
+
 ## Minimal Profile Config
 
 Create `~/.config/tmux-pilot/profiles.toml` when you want reusable defaults:
@@ -131,6 +133,12 @@ extends = "claude"
 repo = "~/repos/myapp"
 branch_prefix = "fix"
 base_ref = "origin/main"
+
+[prod]
+[[prod.rules]]
+name = "changes-requested"
+match = { pr_review = "CHANGES_REQUESTED", pr_state = "OPEN" }
+prompt = "Address all requested review comments on {pr_display}, update tests as needed, and push the fixes."
 ```
 
 Concrete examples:
@@ -141,6 +149,10 @@ tp new review-pass --profile claude -c ~/repos/myapp
 
 # Use repo/bootstrap defaults from [profiles.myapp]
 tp new issue-771 --profile myapp --issue 771
+
+# Preview or send the next prod prompt based on cached PR state
+tp prod --dry-run --repo myapp
+tp prod --repo myapp
 ```
 
 ## Local Docs Preview

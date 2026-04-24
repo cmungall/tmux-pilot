@@ -920,7 +920,9 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc_info:
             cli_main(["--version"])
         assert exc_info.value.code == 0
-        assert "0.3.0" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert output.startswith("tp ")
+        assert "0.0.0" not in output
 
     def test_ls(self, fake_tmux: FakeTmux, capsys):
         cli_main(["ls"])
@@ -1296,6 +1298,111 @@ class TestCLI:
         assert exc_info.value.code == 1
         assert "boom" in capsys.readouterr().err
 
+    def test_prod_dry_run(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "plan_prod_actions",
+            lambda **kwargs: [
+                {
+                    "session": TEST_SESSION,
+                    "pr": "1614",
+                    "pr_review": "CHANGES_REQUESTED",
+                    "pr_merge_state": "BLOCKED",
+                    "skipped": False,
+                    "rule": "changes-requested",
+                    "prompt": "Address all requested review comments.",
+                },
+                {
+                    "session": "idle",
+                    "skipped": True,
+                    "reason": "no-rule",
+                },
+            ],
+        )
+        send_calls: list[tuple[str, str, bool, float]] = []
+        monkeypatch.setattr(
+            core,
+            "send_text",
+            lambda name, text, *, wait, timeout, interval=0.25: send_calls.append((name, text, wait, timeout)),
+        )
+
+        cli_main(["prod", "--dry-run", TEST_SESSION, "idle"])
+
+        out = capsys.readouterr().out
+        assert "rule=changes-requested" in out
+        assert "Address all requested review comments." in out
+        assert "idle  skipped (no-rule)" in out
+        assert "Planned 1 prod message(s)." in out
+        assert send_calls == []
+
+    def test_prod_sends_prompts(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "plan_prod_actions",
+            lambda **kwargs: [
+                {
+                    "session": TEST_SESSION,
+                    "pr": "1614",
+                    "pr_review": "CHANGES_REQUESTED",
+                    "pr_merge_state": "BLOCKED",
+                    "skipped": False,
+                    "rule": "changes-requested",
+                    "prompt": "Address all requested review comments.",
+                }
+            ],
+        )
+        send_calls: list[tuple[str, str, bool, float]] = []
+
+        def send_text(name: str, text: str, *, wait: bool, timeout: float, interval: float = 0.25):
+            del interval
+            send_calls.append((name, text, wait, timeout))
+            return {"type": "codex", "state": "completed", "ready": True}
+
+        monkeypatch.setattr(core, "send_text", send_text)
+
+        cli_main(["prod", "--timeout", "12", TEST_SESSION])
+
+        assert send_calls == [(TEST_SESSION, "Address all requested review comments.", False, 12.0)]
+        assert "Sent 1 prod message(s)." in capsys.readouterr().out
+
+    def test_prod_with_wait_keeps_timeout_strict(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "plan_prod_actions",
+            lambda **kwargs: [
+                {
+                    "session": TEST_SESSION,
+                    "pr": "1614",
+                    "pr_review": "CHANGES_REQUESTED",
+                    "pr_merge_state": "DIRTY",
+                    "skipped": False,
+                    "rule": "changes-requested",
+                    "prompt": "Address all requested review comments.",
+                }
+            ],
+        )
+
+        def send_text(name: str, text: str, *, wait: bool, timeout: float, interval: float = 0.25):
+            del name, text, wait, timeout, interval
+            raise core.AgentWaitTimeout(TEST_SESSION, "running")
+
+        monkeypatch.setattr(core, "send_text", send_text)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["prod", "--wait", TEST_SESSION])
+
+        assert exc_info.value.code == 1
+        assert "Timed out waiting for session" in capsys.readouterr().err
+
+    def test_prod_reports_config_errors(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(core, "plan_prod_actions", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no rules")))
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["prod"])
+
+        assert exc_info.value.code == 1
+        assert "no rules" in capsys.readouterr().err
+
     def test_new_with_agent_and_prompt_uses_plain_mode(self, monkeypatch: pytest.MonkeyPatch, capsys):
         new_calls: list[tuple[str, str | None, str | None]] = []
         launch_calls: list[tuple[str, str, str | None, str | None]] = []
@@ -1490,6 +1597,7 @@ class TestCLI:
         send_keys_calls: list[tuple[str, str]] = []
 
         monkeypatch.setattr(core, "send_keys", lambda name, text: send_keys_calls.append((name, text)))
+        monkeypatch.setattr(core, "set_metadata", lambda *args: None)
 
         def raise_timeout(name: str, text: str, *, wait: bool = False, timeout: float = 30.0, interval: float = 0.25):
             del name, text, wait, timeout, interval

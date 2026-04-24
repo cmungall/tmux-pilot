@@ -59,6 +59,7 @@ NODE_DISAMBIGUATION: dict[str, str] = {
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 PROFILE_CONFIG_PATH = Path.home() / ".config" / "tmux-pilot" / "profiles.toml"
+_RESERVED_CONFIG_TABLES = {"prod"}
 _DEFAULT_CLONE_BASE = "~/repos"
 _DEFAULT_WORKTREE_BASE = "~/worktrees"
 _SEND_KEYS_SETTLE_DELAY = 0.1
@@ -117,6 +118,34 @@ class SessionProfile:
             return self.command
         parts = [self.agent.strip(), *shlex.split(self.agent_args)]
         return tuple(part for part in parts if part)
+
+
+@dataclass(frozen=True)
+class ProdRule:
+    """Configured `tp prod` rule."""
+
+    name: str
+    match: dict[str, tuple[str, ...]]
+    prompt: str
+
+
+@dataclass(frozen=True)
+class ProdConfig:
+    """Resolved `tp prod` config."""
+
+    refresh: bool = True
+    rules: tuple[ProdRule, ...] = ()
+
+
+class AgentWaitTimeout(RuntimeError):
+    """Raised when an agent stays busy past the requested wait timeout."""
+
+    def __init__(self, session_name: str, last_state: str) -> None:
+        self.session_name = session_name
+        self.last_state = last_state
+        super().__init__(
+            f"Timed out waiting for session '{session_name}' to become ready (last state: {last_state})"
+        )
 
 
 def _run(
@@ -330,6 +359,28 @@ def list_sessions(
 
         sessions.append(info)
     return sessions
+
+
+def resolve_sessions(
+    *,
+    names: list[str] | None = None,
+    status: str | None = None,
+    repo: str | None = None,
+    process: str | None = None,
+) -> list[SessionInfo]:
+    """Return all sessions or a named subset, preserving the requested order."""
+    sessions = list_sessions(status=status, repo=repo, process=process)
+    if not names:
+        return sessions
+
+    by_name = {session.name: session for session in sessions}
+    missing = [name for name in names if name not in by_name]
+    if missing:
+        if len(missing) == 1:
+            raise RuntimeError(f"Session '{missing[0]}' not found")
+        formatted = ", ".join(f"'{name}'" for name in missing)
+        raise RuntimeError(f"Sessions not found: {formatted}")
+    return [by_name[name] for name in names]
 
 
 def get_metadata(session_name: str, key: str) -> str:
@@ -584,15 +635,18 @@ def _is_inside_tmux() -> bool:
     return "TMUX" in os.environ
 
 
-def _load_profile_tables(config_path: Path) -> dict[str, dict[str, object]]:
+def _load_config_data(config_path: Path) -> dict[str, object]:
     if not config_path.exists():
         return {}
 
     with config_path.open("rb") as handle:
         data = tomllib.load(handle)
 
-    if not isinstance(data, dict):
-        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_profile_tables(config_path: Path) -> dict[str, dict[str, object]]:
+    data = _load_config_data(config_path)
 
     if isinstance(data.get("profiles"), dict):
         source = data["profiles"]
@@ -602,7 +656,76 @@ def _load_profile_tables(config_path: Path) -> dict[str, dict[str, object]]:
             tables["default"] = default_values
         return tables
 
-    return {name: values for name, values in data.items() if isinstance(values, dict)}
+    return {
+        name: values
+        for name, values in data.items()
+        if isinstance(values, dict) and name not in _RESERVED_CONFIG_TABLES
+    }
+
+
+def _coerce_config_bool(value: object, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise RuntimeError(f"{field_name} in {PROFILE_CONFIG_PATH} must be true or false")
+
+
+def _normalize_prod_match(value: object, *, field_name: str) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        parts = tuple(str(item).strip() for item in value if str(item).strip())
+        if parts:
+            return parts
+        raise RuntimeError(f"{field_name} in {PROFILE_CONFIG_PATH} must not be empty")
+    normalized = str(value).strip()
+    if normalized:
+        return (normalized,)
+    raise RuntimeError(f"{field_name} in {PROFILE_CONFIG_PATH} must not be empty")
+
+
+def load_prod_config(path: Path | None = None) -> ProdConfig:
+    """Load configurable `tp prod` rules from TOML."""
+    config_path = path or PROFILE_CONFIG_PATH
+    data = _load_config_data(config_path)
+    prod_data = data.get("prod")
+    if not isinstance(prod_data, dict):
+        return ProdConfig()
+
+    refresh = True
+    if "refresh" in prod_data:
+        refresh = _coerce_config_bool(prod_data["refresh"], field_name="[prod].refresh")
+
+    raw_rules = prod_data.get("rules", [])
+    if not isinstance(raw_rules, list):
+        raise RuntimeError(f"[prod].rules in {config_path} must be an array of tables")
+
+    rules: list[ProdRule] = []
+    for index, raw_rule in enumerate(raw_rules, start=1):
+        if not isinstance(raw_rule, dict):
+            raise RuntimeError(f"[prod].rules[{index}] in {config_path} must be a table")
+
+        prompt = str(raw_rule.get("prompt", "")).strip()
+        if not prompt:
+            raise RuntimeError(f"[prod].rules[{index}] in {config_path} is missing a prompt")
+
+        raw_match = raw_rule.get("match", raw_rule.get("when"))
+        if not isinstance(raw_match, dict) or not raw_match:
+            raise RuntimeError(f"[prod].rules[{index}] in {config_path} must define match criteria")
+
+        match = {
+            str(key): _normalize_prod_match(value, field_name=f"[prod].rules[{index}].match.{key}")
+            for key, value in raw_match.items()
+        }
+        rules.append(
+            ProdRule(
+                name=str(raw_rule.get("name", f"rule-{index}")).strip() or f"rule-{index}",
+                match=match,
+                prompt=prompt,
+            )
+        )
+
+    return ProdConfig(
+        refresh=refresh,
+        rules=tuple(rules),
+    )
 
 
 def _resolve_profile_values(
@@ -1036,6 +1159,87 @@ def _render_profile_value(value: str, context: dict[str, str]) -> str:
         return value.format_map(_TemplateDict(context))
     except ValueError as exc:
         raise RuntimeError(f"Invalid profile template '{value}': {exc}") from exc
+
+
+def _prod_session_context(session: SessionInfo) -> dict[str, str]:
+    """Flatten session state into template/match variables for `tp prod`."""
+    repo_path = session.metadata.get("repo", "")
+    context = {
+        "name": session.name,
+        "session_name": session.name,
+        "process": session.process,
+        "working_dir": session.working_dir,
+        "dir": session.working_dir,
+        "pid": session.pid,
+        "agent_state": session.agent_state,
+        "repo_name": Path(repo_path or session.working_dir or session.name).name,
+    }
+    context.update({key: value for key, value in session.metadata.items() if value})
+    pr = context.get("pr", "")
+    context["pr_display"] = f"#{pr}" if pr else "-"
+    return {key: str(value) for key, value in context.items()}
+
+
+def _prod_rule_matches(rule: ProdRule, context: dict[str, str]) -> bool:
+    """Return True when all match predicates agree with the flattened session context."""
+    for key, expected_values in rule.match.items():
+        actual = context.get(key, "").strip().casefold()
+        if not any(actual == candidate.strip().casefold() for candidate in expected_values):
+            return False
+    return True
+
+
+def plan_prod_actions(
+    *,
+    names: list[str] | None = None,
+    repo: str | None = None,
+    refresh: bool | None = None,
+    config_path: Path | None = None,
+) -> list[dict[str, object]]:
+    """Resolve `tp prod` prompts for sessions, using the first matching configured rule."""
+    config = load_prod_config(config_path)
+    if not config.rules:
+        raise RuntimeError(f"No [prod] rules configured in {config_path or PROFILE_CONFIG_PATH}")
+
+    should_refresh = config.refresh if refresh is None else refresh
+    if should_refresh:
+        from . import reaper
+
+        reaper.refresh_pr_metadata(names=names, repo=repo)
+
+    sessions = resolve_sessions(names=names, repo=repo)
+    actions: list[dict[str, object]] = []
+    for session in sessions:
+        context = _prod_session_context(session)
+        matched_rule: ProdRule | None = None
+        for rule in config.rules:
+            if _prod_rule_matches(rule, context):
+                matched_rule = rule
+                break
+
+        action: dict[str, object] = {
+            "session": session.name,
+            "process": session.process,
+            "branch": context.get("branch", ""),
+            "pr": context.get("pr", "") or None,
+            "pr_state": context.get("pr_state", "") or None,
+            "pr_review": context.get("pr_review", "") or None,
+            "pr_merge_state": context.get("pr_merge_state", "") or None,
+            "skipped": matched_rule is None,
+            "reason": "no-rule" if matched_rule is None else "",
+        }
+        if matched_rule is None:
+            actions.append(action)
+            continue
+
+        action.update(
+            {
+                "rule": matched_rule.name,
+                "prompt": _render_profile_value(matched_rule.prompt, context),
+            }
+        )
+        actions.append(action)
+    return actions
 
 
 def _profile_context(
@@ -1472,8 +1676,8 @@ def wait_until_session_ready(
         if _agent_is_ready(agent):
             return agent
         if time.monotonic() >= deadline:
-            state = agent.get("state", "unknown")
-            raise RuntimeError(f"Timed out waiting for session '{name}' to become ready (last state: {state})")
+            state = str(agent.get("state", "unknown"))
+            raise AgentWaitTimeout(name, state)
         time.sleep(interval)
 
 
