@@ -159,6 +159,8 @@ When `--repo` is used, `tp new` now handles the full task bootstrap flow:
 - creates a git worktree under the configured worktree base
 - starts the requested agent inside that worktree
 
+Bootstrap worktrees are named `<repo>-<session>` by default. If `NAME` already starts with `<repo>-`, `tp` reuses `NAME` as the worktree leaf directory instead of doubling the repo prefix.
+
 Concrete bootstrap examples:
 
 ```bash

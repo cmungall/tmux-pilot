@@ -65,6 +65,8 @@ Behavior:
 - optionally sends `--prompt`
 - verifies that the pane cwd stays on the requested directory or created worktree when launching the agent
 
+Bootstrap worktrees are named `<repo>-<session>` by default. If `NAME` already starts with `<repo>-`, that session name is reused as the worktree leaf directory instead of repeating the repo prefix.
+
 Examples:
 
 ```bash
