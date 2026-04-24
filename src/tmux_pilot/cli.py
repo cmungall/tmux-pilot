@@ -180,6 +180,66 @@ def cmd_send(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_prod(args: argparse.Namespace) -> None:
+    try:
+        planned = core.plan_prod_actions(
+            names=args.names or None,
+            repo=args.repo,
+            refresh=False if args.no_refresh else None,
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        print(json.dumps(planned, indent=2))
+        return
+
+    if not planned:
+        print("No sessions matched.")
+        return
+
+    matched = 0
+    for action in planned:
+        if action.get("skipped"):
+            print(f"{action['session']}  skipped ({action.get('reason', 'no-rule')})")
+            continue
+
+        matched += 1
+        pr_display = f"#{action['pr']}" if action.get("pr") else "-"
+        header = (
+            f"{action['session']}  rule={action['rule']}  pr={pr_display}"
+            f"  review={action.get('pr_review') or '-'}  merge={action.get('pr_merge_state') or '-'}"
+        )
+        print(header)
+        print(f"  {action['prompt']}")
+
+        if args.dry_run:
+            continue
+
+        wait = args.wait
+        timeout = args.timeout if args.timeout is not None else 30.0
+        try:
+            core.send_text(
+                str(action["session"]),
+                str(action["prompt"]),
+                wait=wait,
+                timeout=timeout,
+            )
+        except RuntimeError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+
+    if matched == 0:
+        print("No prod rules matched.")
+        return
+
+    if args.dry_run:
+        print(f"Planned {matched} prod message(s).")
+    else:
+        print(f"Sent {matched} prod message(s).")
+
+
 def cmd_jump(args: argparse.Namespace) -> None:
     try:
         core.jump_session(args.name)
@@ -839,6 +899,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("--wait", action="store_true", help="Wait for the agent to become ready before sending")
     p_send.add_argument("--timeout", type=float, default=30.0, help="Seconds to wait with --wait (default: 30)")
 
+    # prod
+    p_prod = sub.add_parser("prod", help="Send configured follow-up prompts based on session/PR state")
+    p_prod.add_argument("names", nargs="*", help="Optional session names to prod")
+    p_prod.add_argument("--repo", help="Filter by repo name (substring match)")
+    p_prod.add_argument("--dry-run", action="store_true", help="Preview resolved prompts without sending")
+    p_prod.add_argument("--json", action="store_true", help="Output resolved actions as JSON")
+    p_prod.add_argument("--no-refresh", action="store_true", help="Use cached metadata instead of refreshing PR state first")
+    p_prod.add_argument("--wait", action="store_true", help="Wait for agent readiness before every send")
+    p_prod.add_argument("--timeout", type=float, help="Override send wait timeout for every matched rule")
+
     # jump
     p_jump = sub.add_parser("jump", help="Attach/switch to a session (fzf picker if no name)")
     p_jump.add_argument("name", nargs="?", default=None, help="Session name")
@@ -927,6 +997,7 @@ def main(argv: list[str] | None = None) -> None:
         "new": cmd_new,
         "peek": cmd_peek,
         "send": cmd_send,
+        "prod": cmd_prod,
         "jump": cmd_jump,
         "status": cmd_status,
         "trace": cmd_trace,
