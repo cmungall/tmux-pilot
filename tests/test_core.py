@@ -1597,6 +1597,7 @@ class TestCLI:
         send_keys_calls: list[tuple[str, str]] = []
 
         monkeypatch.setattr(core, "send_keys", lambda name, text: send_keys_calls.append((name, text)))
+        monkeypatch.setattr(core, "set_metadata", lambda *args: None)
 
         def raise_timeout(name: str, text: str, *, wait: bool = False, timeout: float = 30.0, interval: float = 0.25):
             del name, text, wait, timeout, interval
