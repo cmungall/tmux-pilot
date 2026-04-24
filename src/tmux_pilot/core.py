@@ -733,10 +733,6 @@ def should_use_profile_mode(
         return True
     if agent:
         return False
-    if prompt:
-        return "default" in profiles and not directory
-    if directory:
-        return False
     return "default" in profiles
 
 
@@ -788,6 +784,23 @@ def resolve_session_profile(
         base_ref=selected.base_ref or default.base_ref,
         prompt_wait_timeout=selected.prompt_wait_timeout or default.prompt_wait_timeout or 10.0,
     )
+
+
+def _should_bootstrap_profile_workspace(
+    *,
+    directory: str | None = None,
+    explicit_repo: str | None = None,
+    configured_repo: str = "",
+    issue: int | None = None,
+    branch: str | None = None,
+    base_ref: str | None = None,
+) -> bool:
+    """Return True when profile mode should create a task worktree."""
+    if explicit_repo or issue is not None or branch or base_ref:
+        return True
+    if directory:
+        return False
+    return bool(configured_repo)
 
 
 def _slugify_branch_component(value: str) -> str:
@@ -1145,9 +1158,19 @@ def create_profile_session(
     if profile is None:
         raise RuntimeError("No profile, agent, or repo bootstrap configuration was resolved")
 
-    repo_source = profile.repo
-    if not repo_source and (issue is not None or branch or base_ref):
-        repo_source = _git_root(directory or os.getcwd())
+    configured_repo_source = profile.repo
+    repo_source = ""
+    if _should_bootstrap_profile_workspace(
+        directory=directory,
+        explicit_repo=repo,
+        configured_repo=configured_repo_source,
+        issue=issue,
+        branch=branch,
+        base_ref=base_ref,
+    ):
+        repo_source = repo or configured_repo_source
+        if not repo_source and (issue is not None or branch or base_ref):
+            repo_source = _git_root(directory or os.getcwd())
     if issue is not None and not repo_source:
         raise RuntimeError("Issue-based sessions require a git repo; pass --repo or run tp from a git checkout")
     if (branch or base_ref) and not repo_source:

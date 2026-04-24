@@ -65,7 +65,7 @@ tp new review-pass --profile claude -c ~/repos/myapp
 tp new pi-local --profile pi -c ~/repos/pi-mono
 ```
 
-For built-in profiles and custom profiles without a configured `repo`, this uses the selected profile's command in the existing checkout passed by `--directory`. No new worktree is created.
+When `--directory` is present, this uses the selected or default profile's command in the existing checkout passed by `--directory`. No new worktree is created unless you also request bootstrap semantics with `--repo`, `--issue`, `--branch`, or `--base-ref`.
 
 Those commands launch:
 
@@ -99,7 +99,7 @@ Use `--profile` when you want worktree/profile behavior and also want to overrid
 
 ## `--directory` vs `--repo` vs `--here`
 
-- `--directory`: use an existing checkout as the working directory. In plain mode this creates a bare session there. With an explicit built-in or repo-less profile, it launches the selected profile in place.
+- `--directory`: use an existing checkout as the working directory. In plain mode this creates a bare session there. With a resolved profile, it launches that profile in place unless `--repo`, `--issue`, `--branch`, or `--base-ref` requests bootstrap.
 - `--repo`: profile mode bootstrap source. `tp` resolves or clones the repo, creates a task worktree, and launches the selected profile there.
 - `--here`: plain mode only. It uses the current directory, infers repo/branch/worktree metadata, and can infer the session name when `NAME` is omitted.
 
