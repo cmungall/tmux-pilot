@@ -1443,6 +1443,26 @@ class TestCLI:
         assert send_text_calls == [(TEST_SESSION, "1+3", True, 12.0)]
         assert metadata_calls == [(TEST_SESSION, "trace_agent", "codex")]
 
+    def test_launch_agent_session_reports_undelivered_initial_prompt(self, monkeypatch: pytest.MonkeyPatch):
+        send_keys_calls: list[tuple[str, str]] = []
+
+        monkeypatch.setattr(core, "send_keys", lambda name, text: send_keys_calls.append((name, text)))
+
+        def raise_timeout(name: str, text: str, *, wait: bool = False, timeout: float = 30.0, interval: float = 0.25):
+            del name, text, wait, timeout, interval
+            raise RuntimeError(f"Timed out waiting for session '{TEST_SESSION}' to become ready (last state: running)")
+
+        monkeypatch.setattr(core, "send_text", raise_timeout)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            core.launch_agent_session(TEST_SESSION, "codex", prompt="write note.txt alpha")
+
+        message = str(exc_info.value)
+        assert send_keys_calls == [(TEST_SESSION, "codex")]
+        assert "Initial prompt was not delivered" in message
+        assert f"tp send --wait {TEST_SESSION} 'write note.txt alpha'" in message
+        assert "startup modal or trust prompt" in message
+
     def test_launch_agent_session_restores_expected_cwd_before_launch(self, fake_tmux: FakeTmux, tmp_path):
         expected_cwd = str(tmp_path)
         core.new_session(TEST_SESSION, directory=expected_cwd)
