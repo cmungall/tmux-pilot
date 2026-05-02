@@ -431,6 +431,31 @@ def cmd_wt(args: argparse.Namespace) -> None:
             removed = sum(1 for a in actions if a["removed"])
             print(f"\nCleaned {removed}/{len(actions)} worktrees.")
 
+    elif wt_cmd == "resume":
+        result = worktree.resume_worktree(
+            args.name,
+            profile_override=args.profile,
+            continue_session=args.continue_session,
+        )
+        if result["action"] == "jumped":
+            print(f"Jumped to existing session: {result['session']}")
+        else:
+            print(f"Created session: {result['session']} (profile: {result['profile']})")
+
+    elif wt_cmd == "refresh":
+        wts = worktree.scan_worktrees(repo=args.repo)
+        results = worktree.refresh_worktree_prs(wts)
+        if getattr(args, "json", False):
+            print(json.dumps(results, indent=2))
+        else:
+            found = sum(1 for r in results if r.get("pr"))
+            print(f"Refreshed {len(results)} worktrees, {found} with PRs.")
+            for r in results:
+                if r.get("pr"):
+                    pr = r["pr"]
+                    name = Path(r["path"]).name
+                    print(f"  {name}: #{pr['number']} ({pr['state']}) review={pr['review']}")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -575,6 +600,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_wt_clean.add_argument("--force", action="store_true", help="Actually delete (default is dry-run)")
     p_wt_clean.add_argument("--repo", help="Filter by repo name")
     p_wt_clean.add_argument("--stale", type=int, metavar="DAYS", default=7, help="Staleness threshold in days (default: 7)")
+
+    # wt resume
+    p_wt_resume = wt_sub.add_parser("resume", help="Resume work in a worktree")
+    p_wt_resume.add_argument("name", help="Worktree name (or substring)")
+    p_wt_resume.add_argument("-c", "--continue", dest="continue_session", action="store_true", help="Resume last agent conversation (claude --continue)")
+    p_wt_resume.add_argument("--profile", help="Override auto-detected profile (claude/codex)")
+
+    # wt refresh
+    p_wt_refresh = wt_sub.add_parser("refresh", help="Fetch/cache PR status for worktrees")
+    p_wt_refresh.add_argument("--repo", help="Filter by repo name")
+    p_wt_refresh.add_argument("--json", action="store_true", help="JSON output")
 
     return parser
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -265,6 +266,164 @@ def worktree_summary(worktrees: list[WorktreeInfo]) -> dict:
         "by_repo": by_repo,
         "by_status": categories,
     }
+
+
+_PR_CACHE_PATH = Path.home() / ".cache" / "tmux-pilot" / "wt-pr-cache.json"
+
+
+def _load_pr_cache() -> dict[str, dict]:
+    """Load PR cache from disk."""
+    if _PR_CACHE_PATH.is_file():
+        return _json.loads(_PR_CACHE_PATH.read_text())
+    return {}
+
+
+def _save_pr_cache(cache: dict[str, dict]) -> None:
+    """Save PR cache to disk."""
+    _PR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PR_CACHE_PATH.write_text(_json.dumps(cache, indent=2))
+
+
+def get_cached_pr(wt_path: str) -> dict | None:
+    """Get cached PR info for a worktree path."""
+    cache = _load_pr_cache()
+    entry = cache.get(wt_path)
+    if entry:
+        return entry.get("pr")
+    return None
+
+
+def find_worktree(name: str, base: str = _DEFAULT_WORKTREE_BASE) -> str | None:
+    """Find a worktree by name (exact basename match or substring)."""
+    base_expanded = os.path.expanduser(base)
+    if not os.path.isdir(base_expanded):
+        return None
+    exact = os.path.join(base_expanded, name)
+    if os.path.isdir(exact):
+        return exact
+    # Substring match
+    matches = []
+    with os.scandir(base_expanded) as entries:
+        for entry in entries:
+            if entry.is_dir() and name in entry.name:
+                matches.append(entry.path)
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def resume_worktree(
+    name: str,
+    *,
+    base: str = _DEFAULT_WORKTREE_BASE,
+    profile_override: str | None = None,
+    continue_session: bool = False,
+) -> dict:
+    """Resume work in a worktree - jump to existing session or create new one.
+
+    Returns dict with action taken: {"action": "jumped"|"created", "session": name, ...}
+    """
+    wt_path = find_worktree(name, base=base)
+    if not wt_path:
+        raise RuntimeError(f"No worktree matching '{name}' found in {base}")
+
+    # Check if there's already a session using this worktree
+    sessions = list_sessions()
+    for s in sessions:
+        if s.working_dir == wt_path:
+            from .core import jump_to_session
+            jump_to_session(s.name)
+            return {"action": "jumped", "session": s.name, "worktree": wt_path}
+
+    # Detect profile
+    profile_name = profile_override
+    if not profile_name:
+        agent_type = _detect_agent_type(wt_path)
+        if agent_type == "claude":
+            profile_name = "claude"
+        elif agent_type == "codex":
+            profile_name = "codex"
+        else:
+            profile_name = "claude"  # default fallback
+
+    # Build agent override command if --continue
+    agent_override = None
+    if continue_session and profile_name == "claude":
+        agent_override = "claude --continue --permission-mode bypassPermissions"
+    elif continue_session and profile_name == "codex":
+        agent_override = None  # codex doesn't have --continue
+
+    # Session name = worktree basename
+    session_name = os.path.basename(wt_path)
+    from .core import session_exists, uniqueify_session_name, create_profile_session, jump_to_session
+    if session_exists(session_name):
+        session_name = uniqueify_session_name(session_name)
+
+    create_profile_session(
+        session_name,
+        profile_name=profile_name,
+        agent=agent_override,
+        directory=wt_path,
+    )
+
+    jump_to_session(session_name)
+    return {"action": "created", "session": session_name, "worktree": wt_path, "profile": profile_name}
+
+
+def refresh_worktree_prs(
+    worktrees: list[WorktreeInfo] | None = None,
+    *,
+    base: str = _DEFAULT_WORKTREE_BASE,
+    repo: str | None = None,
+) -> list[dict]:
+    """Fetch PR status for worktrees and cache results.
+
+    Uses `gh pr list --head <branch>` per worktree, threaded for speed.
+    Returns list of result dicts.
+    """
+    if worktrees is None:
+        worktrees = scan_worktrees(base=base, repo=repo)
+
+    cache = _load_pr_cache()
+
+    def _fetch_pr(wt: WorktreeInfo) -> dict:
+        if not wt.branch or wt.branch in ("main", "master"):
+            return {"path": wt.path, "branch": wt.branch, "pr": None}
+
+        # Need to run gh in the worktree dir for correct repo context
+        result = _run_git(
+            ["gh", "pr", "list", "--head", wt.branch, "--state", "all",
+             "--json", "number,state,reviewDecision,mergeStateStatus", "--limit", "1"],
+            cwd=wt.path, timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return {"path": wt.path, "branch": wt.branch, "pr": None}
+
+        prs = _json.loads(result.stdout)
+        if not prs:
+            return {"path": wt.path, "branch": wt.branch, "pr": None}
+
+        pr = prs[0]
+        return {
+            "path": wt.path,
+            "branch": wt.branch,
+            "pr": {
+                "number": pr["number"],
+                "state": pr["state"],
+                "review": pr.get("reviewDecision") or "PENDING",
+                "merge_state": pr.get("mergeStateStatus") or "UNKNOWN",
+            }
+        }
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_fetch_pr, worktrees))
+
+    # Update cache
+    for r in results:
+        cache[r["path"]] = {"branch": r["branch"], "pr": r.get("pr")}
+    _save_pr_cache(cache)
+
+    return results
 
 
 def clean_worktrees(worktrees: list[WorktreeInfo], *, dry_run: bool = True) -> list[dict]:

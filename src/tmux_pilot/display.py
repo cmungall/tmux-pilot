@@ -323,12 +323,13 @@ WT_COLUMNS: list[tuple[str, str, WtColumnAccessor]] = [
     ("REPO", "R", lambda w: w.repo_name),
     ("BRANCH", "B", lambda w: w.branch or "-"),
     ("AGE", "A", lambda w: _format_age(w.age_days)),
+    ("PR", "P", lambda w: _wt_pr_label(w)),
     ("SESSION", "S", lambda w: w.session_name or "-"),
     ("AGENT", "G", lambda w: w.agent_type),
     ("STATUS", "T", lambda w: _wt_status_label(w)),
 ]
 
-DEFAULT_WT_COLS = "NAME,REPO,BRANCH,AGE,SESSION,AGENT,STATUS"
+DEFAULT_WT_COLS = "NAME,REPO,BRANCH,AGE,PR,SESSION,AGENT,STATUS"
 
 
 def _format_age(days: float) -> str:
@@ -339,6 +340,26 @@ def _format_age(days: float) -> str:
     if days < 30:
         return f"{int(days)}d"
     return f"{int(days // 30)}mo"
+
+
+def _wt_pr_label(w: WorktreeInfo) -> str:
+    from .worktree import get_cached_pr
+    pr = get_cached_pr(w.path)
+    if not pr:
+        return "-"
+    num = pr["number"]
+    state = pr["state"]
+    if state == "MERGED":
+        return f"#{num} M"
+    if state == "CLOSED":
+        return f"#{num} X"
+    review = pr.get("review", "")
+    code = ""
+    if review == "APPROVED":
+        code = " A"
+    elif review == "CHANGES_REQUESTED":
+        code = " CR"
+    return f"#{num}{code}"
 
 
 def _wt_status_label(w: WorktreeInfo) -> str:
