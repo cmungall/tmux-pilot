@@ -144,7 +144,7 @@ class TestDetectAgentType:
         assert _detect_agent_type(str(tmp_path)) == "claude"
 
     def test_detects_codex(self, tmp_path):
-        (tmp_path / ".codex").write_text("")
+        (tmp_path / ".codex").mkdir()
         assert _detect_agent_type(str(tmp_path)) == "codex"
 
     def test_returns_unknown(self, tmp_path):
@@ -152,8 +152,12 @@ class TestDetectAgentType:
 
     def test_claude_takes_priority_over_codex(self, tmp_path):
         (tmp_path / ".claude").mkdir()
-        (tmp_path / ".codex").write_text("")
+        (tmp_path / ".codex").mkdir()
         assert _detect_agent_type(str(tmp_path)) == "claude"
+
+    def test_codex_branch_prefix_overrides_claude_dir(self, tmp_path):
+        (tmp_path / ".claude").mkdir()
+        assert _detect_agent_type(str(tmp_path), branch="codex/fix-thing") == "codex"
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +189,11 @@ class TestScanWorktrees:
         # Mock _probe_worktree to avoid real git commands
         import subprocess as _sp
 
+        dt = datetime.now(timezone.utc).isoformat()
+
         def fake_run_git(args, *, cwd=None, timeout=10):
-            if "rev-parse" in args:
-                return _sp.CompletedProcess(args, 0, stdout="feature-x\n", stderr="")
-            if "log" in args and "--format=%aI" in args:
-                dt = datetime.now(timezone.utc).isoformat()
-                return _sp.CompletedProcess(args, 0, stdout=dt + "\n", stderr="")
+            if "log" in args and "--format=%D%n%aI" in args:
+                return _sp.CompletedProcess(args, 0, stdout=f"HEAD -> feature-x\n{dt}\n", stderr="")
             if "status" in args:
                 return _sp.CompletedProcess(args, 0, stdout="", stderr="")
             return _sp.CompletedProcess(args, 1, stdout="", stderr="")
@@ -214,12 +217,11 @@ class TestScanWorktrees:
 
         import subprocess as _sp
 
+        dt = datetime.now(timezone.utc).isoformat()
+
         def fake_run_git(args, *, cwd=None, timeout=10):
-            if "rev-parse" in args:
-                return _sp.CompletedProcess(args, 0, stdout="main\n", stderr="")
-            if "log" in args:
-                dt = datetime.now(timezone.utc).isoformat()
-                return _sp.CompletedProcess(args, 0, stdout=dt + "\n", stderr="")
+            if "log" in args and "--format=%D%n%aI" in args:
+                return _sp.CompletedProcess(args, 0, stdout=f"HEAD -> main\n{dt}\n", stderr="")
             if "status" in args:
                 return _sp.CompletedProcess(args, 0, stdout="", stderr="")
             return _sp.CompletedProcess(args, 1, stdout="", stderr="")
@@ -239,12 +241,11 @@ class TestScanWorktrees:
         import subprocess as _sp
         from tmux_pilot.core import SessionInfo
 
+        dt = datetime.now(timezone.utc).isoformat()
+
         def fake_run_git(args, *, cwd=None, timeout=10):
-            if "rev-parse" in args:
-                return _sp.CompletedProcess(args, 0, stdout="feat\n", stderr="")
-            if "log" in args:
-                dt = datetime.now(timezone.utc).isoformat()
-                return _sp.CompletedProcess(args, 0, stdout=dt + "\n", stderr="")
+            if "log" in args and "--format=%D%n%aI" in args:
+                return _sp.CompletedProcess(args, 0, stdout=f"HEAD -> feat\n{dt}\n", stderr="")
             if "status" in args:
                 return _sp.CompletedProcess(args, 0, stdout="", stderr="")
             return _sp.CompletedProcess(args, 1, stdout="", stderr="")
@@ -275,10 +276,8 @@ class TestScanWorktrees:
         old_date = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
 
         def fake_run_git(args, *, cwd=None, timeout=10):
-            if "rev-parse" in args:
-                return _sp.CompletedProcess(args, 0, stdout="old-branch\n", stderr="")
-            if "log" in args:
-                return _sp.CompletedProcess(args, 0, stdout=old_date + "\n", stderr="")
+            if "log" in args and "--format=%D%n%aI" in args:
+                return _sp.CompletedProcess(args, 0, stdout=f"HEAD -> old-branch\n{old_date}\n", stderr="")
             if "status" in args:
                 return _sp.CompletedProcess(args, 0, stdout="", stderr="")
             return _sp.CompletedProcess(args, 1, stdout="", stderr="")

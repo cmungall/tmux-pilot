@@ -76,11 +76,18 @@ class WorktreeInfo:
         }
 
 
-def _detect_agent_type(wt_path: str) -> str:
-    """Detect agent type from directory contents."""
-    if os.path.isdir(os.path.join(wt_path, ".claude")):
+def _detect_agent_type(wt_path: str, branch: str = "") -> str:
+    """Detect agent type from directory contents and branch name."""
+    has_codex = os.path.isdir(os.path.join(wt_path, ".codex"))
+    has_claude = os.path.isdir(os.path.join(wt_path, ".claude"))
+    # Branch prefix is a strong signal
+    if branch.startswith("codex/"):
+        return "codex"
+    if has_codex and not has_claude:
+        return "codex"
+    if has_claude:
         return "claude"
-    if os.path.isfile(os.path.join(wt_path, ".codex")):
+    if has_codex:
         return "codex"
     return "unknown"
 
@@ -106,23 +113,41 @@ def _probe_worktree(wt_path: str, *, full: bool = False) -> dict:
     """Gather git info for a single worktree directory."""
     result: dict = {"path": wt_path}
 
-    # Branch
-    r = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt_path, timeout=5)
-    result["branch"] = r.stdout.strip() if r.returncode == 0 else ""
-
-    # Last commit date
-    r = _run_git(["git", "log", "-1", "--format=%aI"], cwd=wt_path, timeout=5)
+    # Single git call for branch + last commit date
+    r = _run_git(
+        ["git", "log", "-1", "--format=%D%n%aI"],
+        cwd=wt_path, timeout=5,
+    )
     if r.returncode == 0 and r.stdout.strip():
-        try:
-            result["last_commit_date"] = datetime.fromisoformat(r.stdout.strip())
-        except ValueError:
+        lines = r.stdout.strip().splitlines()
+        # First line: refs (e.g. "HEAD -> feat/foo, origin/feat/foo")
+        refs_line = lines[0] if lines else ""
+        branch = ""
+        for ref in refs_line.split(","):
+            ref = ref.strip()
+            if ref.startswith("HEAD -> "):
+                branch = ref[len("HEAD -> "):]
+                break
+        result["branch"] = branch
+        # Second line: author date ISO
+        date_str = lines[1].strip() if len(lines) > 1 else ""
+        if date_str:
+            try:
+                result["last_commit_date"] = datetime.fromisoformat(date_str)
+            except ValueError:
+                result["last_commit_date"] = None
+        else:
             result["last_commit_date"] = None
     else:
+        result["branch"] = ""
         result["last_commit_date"] = None
 
-    # Uncommitted changes
-    r = _run_git(["git", "status", "--porcelain"], cwd=wt_path, timeout=5)
-    result["has_uncommitted"] = r.returncode == 0 and bool(r.stdout.strip())
+    # Uncommitted changes — only in full mode (expensive for 554 worktrees)
+    if full:
+        r = _run_git(["git", "status", "--porcelain"], cwd=wt_path, timeout=5)
+        result["has_uncommitted"] = r.returncode == 0 and bool(r.stdout.strip())
+    else:
+        result["has_uncommitted"] = False
 
     # Full mode: merged and unpushed checks
     if full:
@@ -168,7 +193,7 @@ def scan_worktrees(
         return []
 
     # Phase 1: Scan directories
-    candidates: list[tuple[str, str, str]] = []  # (path, repo_name, agent_type)
+    candidates: list[tuple[str, str]] = []  # (path, repo_name)
     with os.scandir(base_expanded) as entries:
         for entry in entries:
             if not entry.is_dir(follow_symlinks=False):
@@ -181,18 +206,18 @@ def scan_worktrees(
             repo_name = _read_repo_name(wt_path)
             if repo and repo_name != repo:
                 continue
-            agent_type = _detect_agent_type(wt_path)
-            candidates.append((wt_path, repo_name, agent_type))
+            candidates.append((wt_path, repo_name))
 
     if not candidates:
         return []
 
     # Phase 2: Parallel git queries
-    def _probe(item: tuple[str, str, str]) -> dict:
-        wt_path, repo_name, agent_type = item
+    def _probe(item: tuple[str, str]) -> dict:
+        wt_path, repo_name = item
         info = _probe_worktree(wt_path, full=full)
         info["repo_name"] = repo_name
-        info["agent_type"] = agent_type
+        # Detect agent using both directory and branch info
+        info["agent_type"] = _detect_agent_type(wt_path, info.get("branch", ""))
         return info
 
     with ThreadPoolExecutor(max_workers=16) as pool:
