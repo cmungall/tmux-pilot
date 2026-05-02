@@ -1299,8 +1299,31 @@ def _is_git_worktree(path: str) -> bool:
 
 def _remove_worktree(path: str) -> bool:
     """Remove a git worktree. Returns True if removed."""
-    result = _run(["git", "worktree", "remove", "--force", path], check=False, timeout=10)
+    # Must run from the parent repo that owns the worktree
+    repo_dir = _worktree_parent_repo(path)
+    if not repo_dir:
+        return False
+    result = _run(
+        ["git", "worktree", "remove", "--force", path],
+        check=False, timeout=60, cwd=repo_dir,
+    )
     return result.returncode == 0
+
+
+def _worktree_parent_repo(wt_path: str) -> str | None:
+    """Derive the parent repo directory from a worktree's .git file."""
+    git_file = Path(wt_path) / ".git"
+    if git_file.is_file():
+        content = git_file.read_text().strip()
+        if content.startswith("gitdir:"):
+            gitdir = content[len("gitdir:"):].strip()
+            # e.g. /Users/x/repos/myrepo/.git/worktrees/branch-name
+            parts = Path(gitdir).parts
+            if ".git" in parts:
+                git_idx = len(parts) - 1 - list(reversed(parts)).index(".git")
+                repo_root = str(Path(*parts[:git_idx])) if git_idx > 0 else "/"
+                return repo_root
+    return None
 
 
 def _is_branch_merged(path: str, branch: str) -> bool:

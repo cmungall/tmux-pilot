@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .core import (
     SessionInfo,
+    _worktree_parent_repo,
     is_branch_merged,
     list_sessions,
     remove_worktree,
@@ -480,9 +481,11 @@ def clean_worktrees(worktrees: list[WorktreeInfo], *, dry_run: bool = True) -> l
         }
 
         if not dry_run:
+            # Resolve parent repo before removal (path won't exist after)
+            repo_dir = _worktree_parent_repo(wt.path) or wt.path
             action["removed"] = remove_worktree(wt.path)
-            if wt.branch and wt.branch not in ("main", "master"):
-                action["branch_deleted"] = delete_branch(wt.path, wt.branch)
+            if wt.branch and wt.branch not in ("main", "master") and action["removed"]:
+                action["branch_deleted"] = delete_branch(repo_dir, wt.branch)
 
         actions.append(action)
 
