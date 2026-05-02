@@ -183,6 +183,58 @@ tp install-hooks --uninstall
 
 Use this when you want git lifecycle hooks wired to `tp`'s session cleanup flows.
 
+## Manage Worktrees After A Restart
+
+When tmux sessions are gone (e.g. after a reboot) but your worktrees are still on disk:
+
+### Survey what exists
+
+```bash
+tp wt ls
+tp wt ls --repo dismech
+tp wt ls --orphan --stale 14
+tp wt status
+```
+
+### Check PR state across worktrees
+
+```bash
+tp wt refresh --repo ai-gene-review
+tp wt ls --repo ai-gene-review
+```
+
+### Resume work in a worktree
+
+```bash
+# Jump to existing session, or create a new one with the detected agent
+tp wt resume oauth-fix
+
+# Resume with Claude's --continue flag (picks up last conversation)
+tp wt resume oauth-fix -c
+
+# Override the profile if detection gets it wrong
+tp wt resume oauth-fix --profile codex
+```
+
+### Clean up stale worktrees
+
+```bash
+# Preview what would be removed
+tp wt clean
+
+# Only clean worktrees older than 30 days in one repo
+tp wt clean --repo dismech --stale 30
+
+# Actually remove them
+tp wt clean --force
+```
+
+### Also clean orphan worktrees during session cleanup
+
+```bash
+tp clean --force --include-orphan-worktrees
+```
+
 ## A Good Daily Loop
 
 ```bash

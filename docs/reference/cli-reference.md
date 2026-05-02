@@ -18,6 +18,11 @@ This page is the compact command reference for `tp`. For longer walkthroughs, us
 | `tp install-hooks` | install or remove git lifecycle hooks |
 | `tp refresh` | refresh cached PR metadata without cleanup |
 | `tp reap` | remove sessions whose PRs are merged |
+| `tp wt ls` | list worktrees with repo, branch, age, PR, and status |
+| `tp wt status` | worktree health summary by repo and status |
+| `tp wt refresh` | fetch and cache PR metadata for worktrees |
+| `tp wt resume` | resume work in a worktree (jump or create session) |
+| `tp wt clean` | remove merged/orphan+stale worktrees |
 
 ## `tp ls`
 
@@ -186,6 +191,74 @@ tp reap --include-no-pr --dry-run
 ```
 
 `tp reap --dry-run` still refreshes and persists safe PR metadata before deciding what would be reaped.
+
+## `tp wt`
+
+Manage worktrees independently of tmux sessions. Useful after a restart when sessions are gone but worktrees still hold your work.
+
+### `tp wt ls`
+
+```bash
+tp wt ls
+tp wt ls --repo dismech
+tp wt ls --orphan
+tp wt ls --stale 14
+tp wt ls --orphan --stale 14
+tp wt ls --full
+tp wt ls --json
+tp wt ls --cols NAME,REPO,BRANCH,PR,STATUS
+```
+
+Columns: `NAME`, `REPO`, `BRANCH`, `AGE`, `PR`, `SESSION`, `AGENT`, `STATUS`.
+
+Status labels: `active`, `orphan`, `stale`, `orphan+stale`, `merged`, `dirty`.
+
+PR column uses the same compact codes as `tp ls` (`M` merged, `X` closed, `A` approved, `CR` changes requested). Requires `tp wt refresh` to populate.
+
+### `tp wt status`
+
+```bash
+tp wt status
+tp wt status --repo dismech
+tp wt status --json
+```
+
+Shows aggregate counts by repo and by status category.
+
+### `tp wt refresh`
+
+```bash
+tp wt refresh
+tp wt refresh --repo tmux-pilot
+tp wt refresh --json
+```
+
+Fetches PR metadata for each worktree branch via `gh pr list` and caches results to `~/.cache/tmux-pilot/wt-pr-cache.json`. Subsequent `tp wt ls` calls show cached PR data without re-querying GitHub.
+
+### `tp wt resume`
+
+```bash
+tp wt resume oauth-fix
+tp wt resume oauth-fix -c
+tp wt resume oauth-fix --profile codex
+```
+
+Resume work in a worktree:
+
+1. If there is already a tmux session using the worktree, jump to it.
+2. Otherwise, create a new session with the auto-detected agent profile (based on `.claude/` or `.codex` presence) and jump to it.
+
+Use `-c` / `--continue` to pass `--continue` to Claude Code, resuming the most recent conversation in that directory.
+
+### `tp wt clean`
+
+```bash
+tp wt clean
+tp wt clean --force
+tp wt clean --repo dismech --stale 30
+```
+
+Removes worktrees that are merged or (orphan + stale). Dry-run by default; use `--force` to execute.
 
 ## Notes On Current Behavior
 
