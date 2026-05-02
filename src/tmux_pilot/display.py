@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .core import SessionInfo
 
@@ -307,3 +308,99 @@ def _parse_iso_timestamp(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Worktree table formatting
+# ---------------------------------------------------------------------------
+
+from .worktree import WorktreeInfo
+
+WtColumnAccessor = Callable[[WorktreeInfo], str]
+
+WT_COLUMNS: list[tuple[str, str, WtColumnAccessor]] = [
+    ("NAME", "N", lambda w: Path(w.path).name),
+    ("REPO", "R", lambda w: w.repo_name),
+    ("BRANCH", "B", lambda w: w.branch or "-"),
+    ("AGE", "A", lambda w: _format_age(w.age_days)),
+    ("SESSION", "S", lambda w: w.session_name or "-"),
+    ("AGENT", "G", lambda w: w.agent_type),
+    ("STATUS", "T", lambda w: _wt_status_label(w)),
+]
+
+DEFAULT_WT_COLS = "NAME,REPO,BRANCH,AGE,SESSION,AGENT,STATUS"
+
+
+def _format_age(days: float) -> str:
+    if days >= 999:
+        return "?"
+    if days < 1:
+        return "<1d"
+    if days < 30:
+        return f"{int(days)}d"
+    return f"{int(days // 30)}mo"
+
+
+def _wt_status_label(w: WorktreeInfo) -> str:
+    if w.is_merged:
+        return "merged"
+    if w.has_uncommitted:
+        return "dirty"
+    if w.is_orphan and w.is_stale:
+        return "orphan+stale"
+    if w.is_orphan:
+        return "orphan"
+    if w.is_stale:
+        return "stale"
+    return "active"
+
+
+def format_worktree_table(worktrees: list[WorktreeInfo], cols: str | None = None) -> str:
+    """Format worktrees as an aligned table."""
+    if not worktrees:
+        return "No worktrees found."
+
+    columns = _resolve_wt_columns(cols)
+    headers = [name for name, _ in columns]
+    accessors = [acc for _, acc in columns]
+    rows = [[acc(w) for acc in accessors] for w in worktrees]
+
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    lines = []
+    header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
+    lines.append(header_line)
+    lines.append("  ".join("-" * w for w in widths))
+    for row in rows:
+        lines.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+
+    return "\n".join(lines)
+
+
+def _resolve_wt_columns(spec: str | None) -> list[tuple[str, WtColumnAccessor]]:
+    if not spec:
+        spec = DEFAULT_WT_COLS
+
+    _wt_col_by_name = {name: (name, acc) for name, _, acc in WT_COLUMNS}
+
+    if "," in spec:
+        result = []
+        for token in spec.split(","):
+            token = token.strip().upper()
+            if token in _wt_col_by_name:
+                result.append(_wt_col_by_name[token])
+            else:
+                raise ValueError(f"Unknown worktree column: {token}")
+        return result
+
+    _wt_col_by_mnemonic = {m: (name, acc) for name, m, acc in WT_COLUMNS}
+    result = []
+    for ch in spec.upper():
+        if ch in _wt_col_by_mnemonic:
+            result.append(_wt_col_by_mnemonic[ch])
+        else:
+            raise ValueError(f"Unknown worktree column mnemonic: {ch}")
+    return result

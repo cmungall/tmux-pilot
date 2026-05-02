@@ -9,7 +9,7 @@ import sys
 
 from pathlib import Path
 
-from . import core, display, hooks
+from . import core, display, hooks, worktree
 
 
 _NEW_DESCRIPTION = """Create a tmux session.
@@ -245,6 +245,14 @@ def cmd_clean(args: argparse.Namespace) -> None:
         print("  ".join(parts))
     print(f"Cleaned {len(actions)} session(s).")
 
+    if args.include_orphan_worktrees:
+        orphan_wts = worktree.scan_worktrees(orphan_only=True, stale_days=7, full=True)
+        wt_actions = worktree.clean_worktrees(orphan_wts, dry_run=args.dry_run)
+        if wt_actions:
+            print(f"\nOrphan worktrees {'(dry run)' if args.dry_run else 'cleaned'}:")
+            for a in wt_actions:
+                print(f"  {Path(a['path']).name} ({a['reason']})")
+
 
 def cmd_set(args: argparse.Namespace) -> None:
     if not core.session_exists(args.name):
@@ -362,6 +370,68 @@ def cmd_refresh(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_wt(args: argparse.Namespace) -> None:
+    wt_cmd = getattr(args, "wt_command", None)
+    if not wt_cmd:
+        # Show help for wt subcommand
+        build_parser().parse_args(["wt", "--help"])
+        return
+
+    if wt_cmd == "ls":
+        wts = worktree.scan_worktrees(
+            repo=args.repo,
+            stale_days=args.stale,
+            orphan_only=args.orphan,
+            full=args.full,
+        )
+        if args.json:
+            print(json.dumps([w.to_dict() for w in wts], indent=2))
+        else:
+            print(display.format_worktree_table(wts, cols=args.cols))
+
+    elif wt_cmd == "status":
+        wts = worktree.scan_worktrees(repo=args.repo, full=args.full)
+        summary = worktree.worktree_summary(wts)
+        if args.json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(f"Total worktrees: {summary['total']}")
+            print()
+            print("By status:")
+            for status, count in sorted(summary["by_status"].items()):
+                if count:
+                    print(f"  {status}: {count}")
+            print()
+            print("By repo (top 15):")
+            sorted_repos = sorted(summary["by_repo"].items(), key=lambda x: -x[1])
+            for repo_name, count in sorted_repos[:15]:
+                print(f"  {repo_name}: {count}")
+            if len(sorted_repos) > 15:
+                print(f"  ... and {len(sorted_repos) - 15} more")
+
+    elif wt_cmd == "clean":
+        wts = worktree.scan_worktrees(
+            repo=args.repo,
+            stale_days=args.stale,
+            full=True,  # Need merged status for cleanup
+        )
+        actions = worktree.clean_worktrees(wts, dry_run=not args.force)
+        if not actions:
+            print("No worktrees to clean.")
+            return
+        if not args.force:
+            print("Dry run — would clean:")
+            for a in actions:
+                print(f"  {Path(a['path']).name} ({a['reason']})")
+            print(f"\nUse --force to execute. ({len(actions)} worktrees)")
+        else:
+            for a in actions:
+                status = "removed" if a["removed"] else "FAILED"
+                print(f"  {Path(a['path']).name}: {status}")
+            removed = sum(1 for a in actions if a["removed"])
+            print(f"\nCleaned {removed}/{len(actions)} worktrees.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tp",
@@ -447,6 +517,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_clean.add_argument("--status", help="Filter by status (default: done/complete/finished/merged)")
     p_clean.add_argument("--dry-run", action="store_true", help="Preview without executing")
     p_clean.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    p_clean.add_argument("--include-orphan-worktrees", action="store_true", help="Also clean orphaned worktrees")
 
     # kill
     p_kill = sub.add_parser("kill", help="Kill a session")
@@ -480,6 +551,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_refresh.add_argument("--repo", help="Filter by repo name (substring match)")
     p_refresh.add_argument("--json", action="store_true", help="Output refreshed state as JSON")
 
+    # wt (worktree management)
+    p_wt = sub.add_parser("wt", help="Manage worktrees")
+    wt_sub = p_wt.add_subparsers(dest="wt_command")
+
+    # wt ls
+    p_wt_ls = wt_sub.add_parser("ls", help="List worktrees")
+    p_wt_ls.add_argument("--repo", help="Filter by repo name")
+    p_wt_ls.add_argument("--stale", type=int, metavar="DAYS", help="Only show worktrees older than N days")
+    p_wt_ls.add_argument("--orphan", action="store_true", help="Only show orphaned worktrees (no active session)")
+    p_wt_ls.add_argument("--json", action="store_true", help="JSON output")
+    p_wt_ls.add_argument("--cols", help="Columns to display")
+    p_wt_ls.add_argument("--full", action="store_true", help="Include merged/unpushed checks (slower)")
+
+    # wt status
+    p_wt_status = wt_sub.add_parser("status", help="Worktree health summary")
+    p_wt_status.add_argument("--repo", help="Filter by repo name")
+    p_wt_status.add_argument("--json", action="store_true", help="JSON output")
+    p_wt_status.add_argument("--full", action="store_true", help="Include merged/unpushed checks (slower)")
+
+    # wt clean
+    p_wt_clean = wt_sub.add_parser("clean", help="Remove stale/merged/orphaned worktrees")
+    p_wt_clean.add_argument("--force", action="store_true", help="Actually delete (default is dry-run)")
+    p_wt_clean.add_argument("--repo", help="Filter by repo name")
+    p_wt_clean.add_argument("--stale", type=int, metavar="DAYS", default=7, help="Staleness threshold in days (default: 7)")
+
     return parser
 
 
@@ -510,6 +606,7 @@ def main(argv: list[str] | None = None) -> None:
         "install-hooks": cmd_install_hooks,
         "reap": cmd_reap,
         "refresh": cmd_refresh,
+        "wt": cmd_wt,
     }
     handlers[args.command](args)
 
