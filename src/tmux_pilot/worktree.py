@@ -77,16 +77,20 @@ class WorktreeInfo:
 
 
 def _detect_agent_type(wt_path: str, branch: str = "") -> str:
-    """Detect agent type from directory contents and branch name."""
-    has_codex = os.path.isdir(os.path.join(wt_path, ".codex"))
-    has_claude = os.path.isdir(os.path.join(wt_path, ".claude"))
-    # Branch prefix is a strong signal
+    """Detect agent type from branch name and directory markers.
+
+    Branch prefix is the strongest signal. Directory markers like .claude/
+    are often checked into repos and inherited by all worktrees, so they
+    are only used as a tiebreaker when .codex/ is absent.
+    """
+    # Branch prefix is authoritative
     if branch.startswith("codex/"):
         return "codex"
-    if has_codex and not has_claude:
-        return "codex"
-    if has_claude:
+    if branch.startswith("claude/"):
         return "claude"
+    # .codex/ without a claude branch prefix → codex
+    # (.claude/ is too common to be useful — most repos check it in)
+    has_codex = os.path.isdir(os.path.join(wt_path, ".codex"))
     if has_codex:
         return "codex"
     return "unknown"
@@ -360,16 +364,17 @@ def resume_worktree(
             jump_to_session(s.name)
             return {"action": "jumped", "session": s.name, "worktree": wt_path}
 
-    # Detect profile
+    # Detect profile from branch name
     profile_name = profile_override
     if not profile_name:
-        agent_type = _detect_agent_type(wt_path)
-        if agent_type == "claude":
-            profile_name = "claude"
-        elif agent_type == "codex":
+        # Get branch for detection
+        r = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt_path, timeout=5)
+        branch = r.stdout.strip() if r.returncode == 0 else ""
+        agent_type = _detect_agent_type(wt_path, branch)
+        if agent_type == "codex":
             profile_name = "codex"
         else:
-            profile_name = "claude"  # default fallback
+            profile_name = "claude"  # default for claude and unknown
 
     # Build agent override command if --continue
     agent_override = None

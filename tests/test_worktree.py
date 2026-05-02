@@ -139,23 +139,25 @@ class TestReadRepoName:
 
 
 class TestDetectAgentType:
-    def test_detects_claude(self, tmp_path):
-        (tmp_path / ".claude").mkdir()
-        assert _detect_agent_type(str(tmp_path)) == "claude"
+    def test_codex_branch_prefix(self, tmp_path):
+        assert _detect_agent_type(str(tmp_path), branch="codex/fix-thing") == "codex"
 
-    def test_detects_codex(self, tmp_path):
+    def test_claude_branch_prefix(self, tmp_path):
+        assert _detect_agent_type(str(tmp_path), branch="claude/add-feature") == "claude"
+
+    def test_codex_dir_without_branch(self, tmp_path):
         (tmp_path / ".codex").mkdir()
         assert _detect_agent_type(str(tmp_path)) == "codex"
 
-    def test_returns_unknown(self, tmp_path):
+    def test_claude_dir_alone_is_not_enough(self, tmp_path):
+        # .claude/ is often checked into repos, so it's not a reliable signal
+        (tmp_path / ".claude").mkdir()
         assert _detect_agent_type(str(tmp_path)) == "unknown"
 
-    def test_claude_takes_priority_over_codex(self, tmp_path):
-        (tmp_path / ".claude").mkdir()
-        (tmp_path / ".codex").mkdir()
-        assert _detect_agent_type(str(tmp_path)) == "claude"
+    def test_returns_unknown_when_no_signal(self, tmp_path):
+        assert _detect_agent_type(str(tmp_path)) == "unknown"
 
-    def test_codex_branch_prefix_overrides_claude_dir(self, tmp_path):
+    def test_codex_branch_overrides_claude_dir(self, tmp_path):
         (tmp_path / ".claude").mkdir()
         assert _detect_agent_type(str(tmp_path), branch="codex/fix-thing") == "codex"
 
@@ -180,11 +182,11 @@ class TestScanWorktrees:
         assert result == []
 
     def test_scans_worktrees(self, tmp_path, monkeypatch):
-        # Create a fake worktree
+        # Create a fake worktree with .codex dir (reliable signal)
         wt_dir = tmp_path / "feature-x"
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /repos/myrepo/.git/worktrees/feature-x\n")
-        (wt_dir / ".claude").mkdir()
+        (wt_dir / ".codex").mkdir()
 
         # Mock _probe_worktree to avoid real git commands
         import subprocess as _sp
@@ -205,7 +207,7 @@ class TestScanWorktrees:
         assert len(result) == 1
         assert result[0].repo_name == "myrepo"
         assert result[0].branch == "feature-x"
-        assert result[0].agent_type == "claude"
+        assert result[0].agent_type == "codex"
         assert result[0].is_orphan is True
 
     def test_repo_filter(self, tmp_path, monkeypatch):
