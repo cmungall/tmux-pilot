@@ -1398,3 +1398,28 @@ def get_session_status(name: str) -> dict:
         "scrollback_tail": scrollback,
         "agent": agent,
     }
+
+
+# ---------------------------------------------------------------------------
+# Public wrappers for worktree operations
+# ---------------------------------------------------------------------------
+
+
+def is_git_worktree(path: str) -> bool:
+    """Public wrapper: check if path is a git worktree."""
+    return _is_git_worktree(path)
+
+
+def remove_worktree(path: str) -> bool:
+    """Public wrapper: remove a git worktree."""
+    return _remove_worktree(path)
+
+
+def is_branch_merged(path: str, branch: str) -> bool:
+    """Public wrapper: check if branch is merged."""
+    return _is_branch_merged(path, branch)
+
+
+def delete_branch(path: str, branch: str) -> bool:
+    """Public wrapper: delete a local branch."""
+    return _delete_branch(path, branch)
