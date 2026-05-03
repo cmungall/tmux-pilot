@@ -457,9 +457,13 @@ def _resume_one(
             profile_name = "claude"
 
     # Build agent override command if --continue
+    # Appends --continue to the profile's configured command rather than hardcoding
     agent_override = None
-    if continue_session and profile_name == "claude":
-        agent_override = "claude --continue --permission-mode bypassPermissions"
+    if continue_session and profile_name in ("claude", "codex"):
+        from .core import resolve_session_profile
+        profile = resolve_session_profile(profile_name)
+        if profile and profile.command_parts:
+            agent_override = " ".join(profile.command_parts) + " --continue"
 
     # Session name = worktree basename
     session_name = os.path.basename(wt_path)
