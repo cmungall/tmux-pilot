@@ -435,14 +435,14 @@ def _resume_one(
     jump: bool = True,
 ) -> dict:
     """Resume a single worktree path."""
-    from .core import session_exists, uniqueify_session_name, create_profile_session, jump_to_session
+    from .core import session_exists, uniqueify_session_name, create_profile_session, jump_session
 
     # Check if there's already a session using this worktree
     sessions = list_sessions()
     for s in sessions:
         if s.working_dir == wt_path:
             if jump:
-                jump_to_session(s.name)
+                jump_session(s.name)
             return {"action": "exists", "session": s.name, "worktree": wt_path}
 
     # Detect profile from branch name
@@ -474,7 +474,7 @@ def _resume_one(
     )
 
     if jump:
-        jump_to_session(session_name)
+        jump_session(session_name)
     return {"action": "created", "session": session_name, "worktree": wt_path, "profile": profile_name}
 
 
