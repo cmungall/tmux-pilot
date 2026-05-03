@@ -324,22 +324,63 @@ def get_cached_pr(wt_path: str) -> dict | None:
 
 
 def find_worktree(name: str, base: str = _DEFAULT_WORKTREE_BASE) -> str | None:
-    """Find a worktree by name (exact basename match or substring)."""
-    base_expanded = os.path.expanduser(base)
-    if not os.path.isdir(base_expanded):
-        return None
-    exact = os.path.join(base_expanded, name)
-    if os.path.isdir(exact):
-        return exact
-    # Substring match
-    matches = []
-    with os.scandir(base_expanded) as entries:
-        for entry in entries:
-            if entry.is_dir() and name in entry.name:
-                matches.append(entry.path)
+    """Find a single worktree by name (exact basename match or unique substring)."""
+    matches = find_worktrees([name], base=base)
     if len(matches) == 1:
         return matches[0]
     return None
+
+
+def find_worktrees(
+    patterns: list[str],
+    base: str = _DEFAULT_WORKTREE_BASE,
+) -> list[str]:
+    """Find worktrees matching any of the given patterns.
+
+    Each pattern is tried as:
+    1. Exact directory name
+    2. Regex match against directory name
+    3. Substring match (fallback)
+
+    Returns deduplicated list of matching paths.
+    """
+    import re as _re
+
+    base_expanded = os.path.expanduser(base)
+    if not os.path.isdir(base_expanded):
+        return []
+
+    # Gather all worktree dir names
+    all_dirs: list[tuple[str, str]] = []  # (name, full_path)
+    with os.scandir(base_expanded) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                all_dirs.append((entry.name, entry.path))
+
+    matched: dict[str, str] = {}  # path -> path (dedup)
+    for pattern in patterns:
+        # Try exact match first
+        exact = os.path.join(base_expanded, pattern)
+        if os.path.isdir(exact):
+            matched[exact] = exact
+            continue
+
+        # Try as regex
+        try:
+            regex = _re.compile(pattern)
+            for dirname, dirpath in all_dirs:
+                if regex.search(dirname):
+                    matched[dirpath] = dirpath
+            continue
+        except _re.error:
+            pass
+
+        # Fallback: substring
+        for dirname, dirpath in all_dirs:
+            if pattern in dirname:
+                matched[dirpath] = dirpath
+
+    return sorted(matched.values())
 
 
 def resume_worktree(
@@ -348,45 +389,80 @@ def resume_worktree(
     base: str = _DEFAULT_WORKTREE_BASE,
     profile_override: str | None = None,
     continue_session: bool = False,
+    jump: bool = True,
 ) -> dict:
-    """Resume work in a worktree - jump to existing session or create new one.
+    """Resume work in a single worktree - jump to existing session or create new one.
 
-    Returns dict with action taken: {"action": "jumped"|"created", "session": name, ...}
+    Returns dict with action taken: {"action": "jumped"|"created"|"exists", ...}
     """
     wt_path = find_worktree(name, base=base)
     if not wt_path:
         raise RuntimeError(f"No worktree matching '{name}' found in {base}")
 
+    return _resume_one(wt_path, profile_override=profile_override,
+                       continue_session=continue_session, jump=jump)
+
+
+def resume_worktrees(
+    patterns: list[str],
+    *,
+    base: str = _DEFAULT_WORKTREE_BASE,
+    profile_override: str | None = None,
+    continue_session: bool = False,
+) -> list[dict]:
+    """Resume work in multiple worktrees matching patterns.
+
+    Creates sessions for all matching worktrees (does not jump).
+    Returns list of action dicts.
+    """
+    paths = find_worktrees(patterns, base=base)
+    if not paths:
+        raise RuntimeError(f"No worktrees matching patterns: {patterns}")
+
+    results = []
+    for wt_path in paths:
+        result = _resume_one(wt_path, profile_override=profile_override,
+                             continue_session=continue_session, jump=False)
+        results.append(result)
+    return results
+
+
+def _resume_one(
+    wt_path: str,
+    *,
+    profile_override: str | None = None,
+    continue_session: bool = False,
+    jump: bool = True,
+) -> dict:
+    """Resume a single worktree path."""
+    from .core import session_exists, uniqueify_session_name, create_profile_session, jump_to_session
+
     # Check if there's already a session using this worktree
     sessions = list_sessions()
     for s in sessions:
         if s.working_dir == wt_path:
-            from .core import jump_to_session
-            jump_to_session(s.name)
-            return {"action": "jumped", "session": s.name, "worktree": wt_path}
+            if jump:
+                jump_to_session(s.name)
+            return {"action": "exists", "session": s.name, "worktree": wt_path}
 
     # Detect profile from branch name
     profile_name = profile_override
     if not profile_name:
-        # Get branch for detection
         r = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt_path, timeout=5)
         branch = r.stdout.strip() if r.returncode == 0 else ""
         agent_type = _detect_agent_type(wt_path, branch)
         if agent_type == "codex":
             profile_name = "codex"
         else:
-            profile_name = "claude"  # default for claude and unknown
+            profile_name = "claude"
 
     # Build agent override command if --continue
     agent_override = None
     if continue_session and profile_name == "claude":
         agent_override = "claude --continue --permission-mode bypassPermissions"
-    elif continue_session and profile_name == "codex":
-        agent_override = None  # codex doesn't have --continue
 
     # Session name = worktree basename
     session_name = os.path.basename(wt_path)
-    from .core import session_exists, uniqueify_session_name, create_profile_session, jump_to_session
     if session_exists(session_name):
         session_name = uniqueify_session_name(session_name)
 
@@ -397,7 +473,8 @@ def resume_worktree(
         directory=wt_path,
     )
 
-    jump_to_session(session_name)
+    if jump:
+        jump_to_session(session_name)
     return {"action": "created", "session": session_name, "worktree": wt_path, "profile": profile_name}
 
 

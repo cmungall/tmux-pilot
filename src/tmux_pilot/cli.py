@@ -432,15 +432,50 @@ def cmd_wt(args: argparse.Namespace) -> None:
             print(f"\nCleaned {removed}/{len(actions)} worktrees.")
 
     elif wt_cmd == "resume":
-        result = worktree.resume_worktree(
-            args.name,
+        patterns = args.patterns
+        # Single pattern: original behavior (find + jump)
+        if len(patterns) == 1 and not args.dry_run:
+            matches = worktree.find_worktrees(patterns)
+            if len(matches) == 1:
+                result = worktree.resume_worktree(
+                    patterns[0],
+                    profile_override=args.profile,
+                    continue_session=args.continue_session,
+                    jump=True,
+                )
+                if result["action"] == "exists":
+                    print(f"Jumped to existing session: {result['session']}")
+                else:
+                    print(f"Created session: {result['session']} (profile: {result['profile']})")
+                return
+            # Multiple matches for single pattern — fall through to bulk mode
+
+        # Bulk mode: find all matches, show or create
+        matches = worktree.find_worktrees(patterns)
+        if not matches:
+            print(f"No worktrees matching: {' '.join(patterns)}", file=sys.stderr)
+            sys.exit(1)
+
+        if args.dry_run:
+            print(f"Would resume {len(matches)} worktree(s):")
+            for path in matches:
+                print(f"  {Path(path).name}")
+            return
+
+        results = worktree.resume_worktrees(
+            patterns,
             profile_override=args.profile,
             continue_session=args.continue_session,
         )
-        if result["action"] == "jumped":
-            print(f"Jumped to existing session: {result['session']}")
-        else:
-            print(f"Created session: {result['session']} (profile: {result['profile']})")
+        for r in results:
+            action = r["action"]
+            name = r["session"]
+            wt_name = Path(r["worktree"]).name
+            if action == "exists":
+                print(f"  {wt_name}: session already exists ({name})")
+            else:
+                print(f"  {wt_name}: created ({r['profile']})")
+        print(f"\nResumed {len(results)} worktree(s).")
 
     elif wt_cmd == "refresh":
         wts = worktree.scan_worktrees(repo=args.repo)
@@ -602,10 +637,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_wt_clean.add_argument("--stale", type=int, metavar="DAYS", default=7, help="Staleness threshold in days (default: 7)")
 
     # wt resume
-    p_wt_resume = wt_sub.add_parser("resume", help="Resume work in a worktree")
-    p_wt_resume.add_argument("name", help="Worktree name (or substring)")
+    p_wt_resume = wt_sub.add_parser("resume", help="Resume work in worktree(s)")
+    p_wt_resume.add_argument("patterns", nargs="+", help="Worktree name(s), substrings, or regex patterns")
     p_wt_resume.add_argument("-c", "--continue", dest="continue_session", action="store_true", help="Resume last agent conversation (claude --continue)")
     p_wt_resume.add_argument("--profile", help="Override auto-detected profile (claude/codex)")
+    p_wt_resume.add_argument("--dry-run", action="store_true", help="Show what would be resumed without creating sessions")
 
     # wt refresh
     p_wt_refresh = wt_sub.add_parser("refresh", help="Fetch/cache PR status for worktrees")
