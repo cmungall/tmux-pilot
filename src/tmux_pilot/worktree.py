@@ -389,18 +389,20 @@ def resume_worktree(
     base: str = _DEFAULT_WORKTREE_BASE,
     profile_override: str | None = None,
     continue_session: bool = False,
-    jump: bool = True,
+    no_agent: bool = False,
+    jump: bool = False,
 ) -> dict:
-    """Resume work in a single worktree - jump to existing session or create new one.
+    """Resume work in a single worktree.
 
-    Returns dict with action taken: {"action": "jumped"|"created"|"exists", ...}
+    Returns dict with action taken: {"action": "exists"|"created", ...}
     """
     wt_path = find_worktree(name, base=base)
     if not wt_path:
         raise RuntimeError(f"No worktree matching '{name}' found in {base}")
 
     return _resume_one(wt_path, profile_override=profile_override,
-                       continue_session=continue_session, jump=jump)
+                       continue_session=continue_session,
+                       no_agent=no_agent, jump=jump)
 
 
 def resume_worktrees(
@@ -409,10 +411,11 @@ def resume_worktrees(
     base: str = _DEFAULT_WORKTREE_BASE,
     profile_override: str | None = None,
     continue_session: bool = False,
+    no_agent: bool = False,
+    jump: bool = False,
 ) -> list[dict]:
     """Resume work in multiple worktrees matching patterns.
 
-    Creates sessions for all matching worktrees (does not jump).
     Returns list of action dicts.
     """
     paths = find_worktrees(patterns, base=base)
@@ -422,7 +425,8 @@ def resume_worktrees(
     results = []
     for wt_path in paths:
         result = _resume_one(wt_path, profile_override=profile_override,
-                             continue_session=continue_session, jump=False)
+                             continue_session=continue_session,
+                             no_agent=no_agent, jump=jump)
         results.append(result)
     return results
 
@@ -432,10 +436,14 @@ def _resume_one(
     *,
     profile_override: str | None = None,
     continue_session: bool = False,
-    jump: bool = True,
+    no_agent: bool = False,
+    jump: bool = False,
 ) -> dict:
     """Resume a single worktree path."""
-    from .core import session_exists, uniqueify_session_name, create_profile_session, jump_session
+    from .core import (
+        session_exists, uniqueify_session_name,
+        create_profile_session, new_session, jump_session,
+    )
 
     # Check if there's already a session using this worktree
     sessions = list_sessions()
@@ -444,6 +452,17 @@ def _resume_one(
             if jump:
                 jump_session(s.name)
             return {"action": "exists", "session": s.name, "worktree": wt_path}
+
+    # Session name = worktree basename
+    session_name = os.path.basename(wt_path)
+    if session_exists(session_name):
+        session_name = uniqueify_session_name(session_name)
+
+    if no_agent:
+        new_session(session_name, directory=wt_path)
+        if jump:
+            jump_session(session_name)
+        return {"action": "created", "session": session_name, "worktree": wt_path, "profile": "shell"}
 
     # Detect profile from branch name
     profile_name = profile_override
@@ -456,19 +475,13 @@ def _resume_one(
         else:
             profile_name = "claude"
 
-    # Build agent override command if --continue
-    # Appends --continue to the profile's configured command rather than hardcoding
+    # Build agent override if --continue: append to profile's configured command
     agent_override = None
-    if continue_session and profile_name in ("claude", "codex"):
+    if continue_session:
         from .core import resolve_session_profile
         profile = resolve_session_profile(profile_name)
         if profile and profile.command_parts:
             agent_override = " ".join(profile.command_parts) + " --continue"
-
-    # Session name = worktree basename
-    session_name = os.path.basename(wt_path)
-    if session_exists(session_name):
-        session_name = uniqueify_session_name(session_name)
 
     create_profile_session(
         session_name,

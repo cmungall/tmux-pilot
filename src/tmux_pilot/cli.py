@@ -432,28 +432,9 @@ def cmd_wt(args: argparse.Namespace) -> None:
             print(f"\nCleaned {removed}/{len(actions)} worktrees.")
 
     elif wt_cmd == "resume":
-        patterns = args.patterns
-        # Single pattern: original behavior (find + jump)
-        if len(patterns) == 1 and not args.dry_run:
-            matches = worktree.find_worktrees(patterns)
-            if len(matches) == 1:
-                result = worktree.resume_worktree(
-                    patterns[0],
-                    profile_override=args.profile,
-                    continue_session=args.continue_session,
-                    jump=True,
-                )
-                if result["action"] == "exists":
-                    print(f"Jumped to existing session: {result['session']}")
-                else:
-                    print(f"Created session: {result['session']} (profile: {result['profile']})")
-                return
-            # Multiple matches for single pattern — fall through to bulk mode
-
-        # Bulk mode: find all matches, show or create
-        matches = worktree.find_worktrees(patterns)
+        matches = worktree.find_worktrees(args.patterns)
         if not matches:
-            print(f"No worktrees matching: {' '.join(patterns)}", file=sys.stderr)
+            print(f"No worktrees matching: {' '.join(args.patterns)}", file=sys.stderr)
             sys.exit(1)
 
         if args.dry_run:
@@ -462,20 +443,28 @@ def cmd_wt(args: argparse.Namespace) -> None:
                 print(f"  {Path(path).name}")
             return
 
+        jump = args.jump
+        if jump and len(matches) > 1:
+            print("--jump requires a single worktree match, but got "
+                  f"{len(matches)}. Use --dry-run to preview.", file=sys.stderr)
+            sys.exit(1)
+
         results = worktree.resume_worktrees(
-            patterns,
+            args.patterns,
             profile_override=args.profile,
             continue_session=args.continue_session,
+            no_agent=args.no_agent,
+            jump=jump,
         )
         for r in results:
-            action = r["action"]
-            name = r["session"]
             wt_name = Path(r["worktree"]).name
-            if action == "exists":
-                print(f"  {wt_name}: session already exists ({name})")
+            if r["action"] == "exists":
+                suffix = " (jumped)" if jump else ""
+                print(f"  {wt_name}: session already exists ({r['session']}){suffix}")
             else:
-                print(f"  {wt_name}: created ({r['profile']})")
-        print(f"\nResumed {len(results)} worktree(s).")
+                print(f"  {wt_name}: created ({r.get('profile', 'shell')})")
+        if len(results) > 1:
+            print(f"\nResumed {len(results)} worktree(s).")
 
     elif wt_cmd == "refresh":
         wts = worktree.scan_worktrees(repo=args.repo)
@@ -639,7 +628,9 @@ def build_parser() -> argparse.ArgumentParser:
     # wt resume
     p_wt_resume = wt_sub.add_parser("resume", help="Resume work in worktree(s)")
     p_wt_resume.add_argument("patterns", nargs="+", help="Worktree name(s), substrings, or regex patterns")
-    p_wt_resume.add_argument("-c", "--continue", dest="continue_session", action="store_true", help="Resume last agent conversation (claude --continue)")
+    p_wt_resume.add_argument("-c", "--continue", dest="continue_session", action="store_true", help="Pass --continue to agent (resume last conversation)")
+    p_wt_resume.add_argument("-j", "--jump", action="store_true", help="Attach to the session (single worktree only)")
+    p_wt_resume.add_argument("--no-agent", action="store_true", help="Open shell only, don't launch agent")
     p_wt_resume.add_argument("--profile", help="Override auto-detected profile (claude/codex)")
     p_wt_resume.add_argument("--dry-run", action="store_true", help="Show what would be resumed without creating sessions")
 
