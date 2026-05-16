@@ -6,7 +6,9 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -453,6 +455,36 @@ class TestWaitForReady:
         with pytest.raises(RuntimeError, match="Timed out waiting for session '_tp_test_session'"):
             core.wait_until_session_ready(TEST_SESSION, timeout=0.5, interval=0.1)
 
+    def test_wait_until_session_ready_uses_cached_trace_path(
+        self,
+        fake_tmux: FakeTmux,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ):
+        transcript = tmp_path / "rollout.jsonl"
+        transcript.write_text(
+            '{"timestamp":"2026-03-29T20:00:00Z","type":"session_meta","payload":{"cwd":"/tmp/worktree"}}\n',
+            encoding="utf-8",
+        )
+        core.new_session(TEST_SESSION, directory="/tmp/example")
+        fake_tmux.sessions[TEST_SESSION]["command"] = "codex"
+        core.set_metadata(TEST_SESSION, "trace_agent", "codex")
+        core.set_metadata(TEST_SESSION, "trace_path", str(transcript))
+        monkeypatch.setattr(core, "peek_session", lambda name, lines=30: "OpenAI Codex")
+
+        transcript_paths: list[Path | None] = []
+
+        def fake_get_agent_state(*args, **kwargs):
+            transcript_paths.append(kwargs.get("transcript_path"))
+            return {"type": "codex", "state": "completed", "ready": True}
+
+        monkeypatch.setattr(core, "_get_agent_state", fake_get_agent_state)
+
+        agent = core.wait_until_session_ready(TEST_SESSION, timeout=1.0, interval=0.1)
+
+        assert agent == {"type": "codex", "state": "completed", "ready": True}
+        assert transcript_paths == [transcript]
+
 
 class TestResolveSession:
     def test_exact_match(self, fake_tmux: FakeTmux):
@@ -501,6 +533,90 @@ class TestStatus:
     def test_status_nonexistent(self, fake_tmux: FakeTmux):
         with pytest.raises(RuntimeError, match="not found"):
             core.get_session_status("_tp_nonexistent_xyz")
+
+
+class TestTrace:
+    def test_get_session_trace_discovers_and_caches_transcript(
+        self,
+        fake_tmux: FakeTmux,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ):
+        transcript = tmp_path / "rollout.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    '{"timestamp":"2026-03-29T20:00:00Z","type":"session_meta","payload":{"cwd":"/tmp/example"}}',
+                    '{"timestamp":"2026-03-29T20:00:01Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-3"}}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        core.new_session(TEST_SESSION, directory="/tmp/example")
+        fake_tmux.sessions[TEST_SESSION]["command"] = "codex"
+        monkeypatch.setattr(agent_sessions, "find_transcript_for_cwd", lambda agent_type, cwd, limit=200: transcript)
+
+        trace = core.get_session_trace(TEST_SESSION)
+
+        assert trace["agent"] == "codex"
+        assert trace["path"] == str(transcript.resolve())
+        assert trace["source"] == "dynamic"
+        assert trace["transcript_cwd"] == str(Path("/tmp/example").resolve())
+        assert trace["state"] == "completed"
+        assert fake_tmux.sessions[TEST_SESSION]["metadata"]["trace_agent"] == "codex"
+        assert fake_tmux.sessions[TEST_SESSION]["metadata"]["trace_path"] == str(transcript.resolve())
+
+    def test_get_session_trace_prefers_cached_binding_over_pane_cwd(
+        self,
+        fake_tmux: FakeTmux,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ):
+        transcript = tmp_path / "rollout.jsonl"
+        transcript.write_text(
+            '{"timestamp":"2026-03-29T20:00:00Z","type":"session_meta","payload":{"cwd":"/tmp/worktree"}}\n',
+            encoding="utf-8",
+        )
+        core.new_session(TEST_SESSION, directory="/tmp/main")
+        fake_tmux.sessions[TEST_SESSION]["command"] = "codex"
+        core.set_metadata(TEST_SESSION, "trace_agent", "codex")
+        core.set_metadata(TEST_SESSION, "trace_path", str(transcript))
+
+        calls: list[tuple[str, str]] = []
+
+        def fake_find(agent_type: str, cwd: str, limit: int = 200):
+            calls.append((agent_type, cwd))
+            return None
+
+        monkeypatch.setattr(agent_sessions, "find_transcript_for_cwd", fake_find)
+
+        trace = core.get_session_trace(TEST_SESSION)
+
+        assert trace["source"] == "cached"
+        assert trace["transcript_cwd"] == str(Path("/tmp/worktree").resolve())
+        assert calls == []
+
+    def test_get_session_status_exposes_trace_info(
+        self,
+        fake_tmux: FakeTmux,
+        tmp_path,
+    ):
+        transcript = tmp_path / "rollout.jsonl"
+        transcript.write_text(
+            '{"timestamp":"2026-03-29T20:00:00Z","type":"session_meta","payload":{"cwd":"/tmp/worktree"}}\n',
+            encoding="utf-8",
+        )
+        core.new_session(TEST_SESSION, directory="/tmp/main")
+        fake_tmux.sessions[TEST_SESSION]["command"] = "codex"
+        core.set_metadata(TEST_SESSION, "trace_agent", "codex")
+        core.set_metadata(TEST_SESSION, "trace_path", str(transcript))
+
+        info = core.get_session_status(TEST_SESSION)
+
+        assert info["trace"]["path"] == str(transcript.resolve())
+        assert info["metadata"]["trace_agent"] == "codex"
+        assert info["metadata"]["trace_path"] == str(transcript.resolve())
 
 
 class TestFiltering:
@@ -685,6 +801,7 @@ class TestDisplay:
                         "origin": "git-worktree",
                         "last_refresh": "2026-04-19T22:15:00Z",
                         "pr_state": "OPEN",
+                        "trace_agent": "codex",
                     },
                 )
             ],
@@ -694,6 +811,7 @@ class TestDisplay:
         assert "ORIGIN" in result
         assert "LAST_REFRESH" in result
         assert "PR_STATE" in result
+        assert "TRACE_AGENT" in result
         assert "git-worktree" in result
 
     def test_cols_all_mnemonics(self):
@@ -802,7 +920,9 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc_info:
             cli_main(["--version"])
         assert exc_info.value.code == 0
-        assert "0.3.0" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert output.startswith("tp ")
+        assert "0.0.0" not in output
 
     def test_ls(self, fake_tmux: FakeTmux, capsys):
         cli_main(["ls"])
@@ -895,6 +1015,253 @@ class TestCLI:
         assert calls == [(None, "dismech")]
         assert "No sessions to refresh." in capsys.readouterr().out
 
+    def test_trace_json(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "codex",
+                "path": "/tmp/trace.jsonl",
+                "source": "cached",
+                "pane_working_dir": "/tmp/worktree",
+                "transcript_cwd": "/tmp/worktree",
+                "state": "completed",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "turn-9",
+                "tail": ['{"type":"event_msg"}'],
+            },
+        )
+
+        cli_main(["trace", "alpha", "--json", "--lines", "1"])
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["agent"] == "codex"
+        assert data["path"] == "/tmp/trace.jsonl"
+
+    def test_trace_show_raw(self, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path):
+        transcript = tmp_path / "trace.jsonl"
+        transcript.write_text('{"type":"user"}\n{"type":"assistant"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "codex",
+                "path": str(transcript),
+                "source": "cached",
+                "pane_working_dir": "/tmp/worktree",
+                "transcript_cwd": "/tmp/worktree",
+                "state": "completed",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "turn-9",
+                "tail": [],
+            },
+        )
+
+        cli_main(["trace", "alpha", "--show", "raw", "--lines", "1"])
+
+        assert capsys.readouterr().out.strip() == '{"type":"assistant"}'
+
+    def test_trace_show_json_uses_pretty_records(self, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path):
+        transcript = tmp_path / "trace.jsonl"
+        transcript.write_text('{"type":"user","message":"hello"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "codex",
+                "path": str(transcript),
+                "source": "cached",
+                "pane_working_dir": "/tmp/worktree",
+                "transcript_cwd": "/tmp/worktree",
+                "state": "completed",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "turn-9",
+                "tail": [],
+            },
+        )
+
+        cli_main(["trace", "alpha", "--show", "json"])
+
+        data = json.loads(capsys.readouterr().out)
+        assert data == [{"type": "user", "message": "hello"}]
+
+    def test_trace_show_json_color_always_emits_ansi(self, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path):
+        transcript = tmp_path / "trace.jsonl"
+        transcript.write_text('{"type":"user","message":"hello"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "codex",
+                "path": str(transcript),
+                "source": "cached",
+                "pane_working_dir": "/tmp/worktree",
+                "transcript_cwd": "/tmp/worktree",
+                "state": "completed",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "turn-9",
+                "tail": [],
+            },
+        )
+
+        cli_main(["trace", "alpha", "--show", "json", "--color", "always"])
+
+        out = capsys.readouterr().out
+        assert "\x1b[" in out
+        assert '"type"' in out
+
+    def test_trace_show_json_color_auto_respects_non_tty(self, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path):
+        transcript = tmp_path / "trace.jsonl"
+        transcript.write_text('{"type":"user","message":"hello"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "codex",
+                "path": str(transcript),
+                "source": "cached",
+                "pane_working_dir": "/tmp/worktree",
+                "transcript_cwd": "/tmp/worktree",
+                "state": "completed",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "turn-9",
+                "tail": [],
+            },
+        )
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+
+        cli_main(["trace", "alpha", "--show", "json", "--color", "auto"])
+
+        out = capsys.readouterr().out
+        assert "\x1b[" not in out
+        data = json.loads(out)
+        assert data == [{"type": "user", "message": "hello"}]
+
+    def test_trace_show_yaml_handles_claude_records(self, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path):
+        transcript = tmp_path / "trace.jsonl"
+        transcript.write_text(
+            '{"cwd":"/tmp/project","sessionId":"claude-1","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "claude-code",
+                "path": str(transcript),
+                "source": "cached",
+                "pane_working_dir": "/tmp/project",
+                "transcript_cwd": "/tmp/project",
+                "state": "completed",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "msg-9",
+                "tail": [],
+            },
+        )
+
+        cli_main(["trace", "alpha", "--show", "yaml"])
+
+        out = capsys.readouterr().out
+        assert "sessionId: \"claude-1\"" in out
+        assert "role: \"assistant\"" in out
+        assert "text: \"done\"" in out
+
+    def test_trace_show_tsv_handles_claude_records(self, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path):
+        transcript = tmp_path / "trace.jsonl"
+        transcript.write_text(
+            '{"cwd":"/tmp/project","sessionId":"claude-1","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"pwd"}}]},"uuid":"msg-2","timestamp":"2026-03-29T20:00:02Z"}\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "claude-code",
+                "path": str(transcript),
+                "source": "cached",
+                "pane_working_dir": "/tmp/project",
+                "transcript_cwd": "/tmp/project",
+                "state": "running",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "msg-2",
+                "tail": [],
+            },
+        )
+
+        cli_main(["trace", "alpha", "--show", "tsv"])
+
+        out = capsys.readouterr().out.strip().splitlines()
+        assert out[0] == "timestamp\tkind\trole\tturn_id\tsummary"
+        assert out[1] == "2026-03-29T20:00:02Z\tassistant\tassistant\tmsg-2\ttool Bash: pwd"
+
+    def test_trace_show_formatted_handles_codex_records(self, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path):
+        transcript = tmp_path / "trace.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    '{"timestamp":"2026-03-29T20:00:00Z","type":"session_meta","payload":{"cwd":"/tmp/project"}}',
+                    '{"timestamp":"2026-03-29T20:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}',
+                    '{"timestamp":"2026-03-29T20:00:02Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "codex",
+                "path": str(transcript),
+                "source": "cached",
+                "pane_working_dir": "/tmp/project",
+                "transcript_cwd": "/tmp/project",
+                "state": "completed",
+                "timestamp": "2026-04-20T00:00:00Z",
+                "turn_id": "turn-1",
+                "tail": [],
+            },
+        )
+
+        cli_main(["trace", "alpha", "--show", "formatted", "--color", "never"])
+
+        out = capsys.readouterr().out
+        assert "2026-03-29T20:00:00Z  session" in out
+        assert "cwd=/tmp/project" in out
+        assert "2026-03-29T20:00:01Z  event" in out
+        assert "[turn-1]  task_started" in out
+        assert "[turn-1]  task_complete" in out
+
+    def test_trace_human_output_when_missing(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "get_session_trace",
+            lambda name, refresh=False, lines=0: {
+                "session": name,
+                "agent": "codex",
+                "path": "",
+                "source": "none",
+                "pane_working_dir": "/tmp/worktree",
+                "transcript_cwd": "",
+                "state": "",
+                "timestamp": "",
+                "turn_id": "",
+                "tail": [],
+            },
+        )
+
+        cli_main(["trace", "alpha"])
+
+        assert "No transcript trace found for session 'alpha'." in capsys.readouterr().out
+
     def test_ls_all_metadata(self, fake_tmux: FakeTmux, capsys):
         core.new_session(TEST_SESSION, desc="metadata test")
         core.set_metadata(TEST_SESSION, "origin", "git-worktree")
@@ -930,6 +1297,111 @@ class TestCLI:
 
         assert exc_info.value.code == 1
         assert "boom" in capsys.readouterr().err
+
+    def test_prod_dry_run(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "plan_prod_actions",
+            lambda **kwargs: [
+                {
+                    "session": TEST_SESSION,
+                    "pr": "1614",
+                    "pr_review": "CHANGES_REQUESTED",
+                    "pr_merge_state": "BLOCKED",
+                    "skipped": False,
+                    "rule": "changes-requested",
+                    "prompt": "Address all requested review comments.",
+                },
+                {
+                    "session": "idle",
+                    "skipped": True,
+                    "reason": "no-rule",
+                },
+            ],
+        )
+        send_calls: list[tuple[str, str, bool, float]] = []
+        monkeypatch.setattr(
+            core,
+            "send_text",
+            lambda name, text, *, wait, timeout, interval=0.25: send_calls.append((name, text, wait, timeout)),
+        )
+
+        cli_main(["prod", "--dry-run", TEST_SESSION, "idle"])
+
+        out = capsys.readouterr().out
+        assert "rule=changes-requested" in out
+        assert "Address all requested review comments." in out
+        assert "idle  skipped (no-rule)" in out
+        assert "Planned 1 prod message(s)." in out
+        assert send_calls == []
+
+    def test_prod_sends_prompts(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "plan_prod_actions",
+            lambda **kwargs: [
+                {
+                    "session": TEST_SESSION,
+                    "pr": "1614",
+                    "pr_review": "CHANGES_REQUESTED",
+                    "pr_merge_state": "BLOCKED",
+                    "skipped": False,
+                    "rule": "changes-requested",
+                    "prompt": "Address all requested review comments.",
+                }
+            ],
+        )
+        send_calls: list[tuple[str, str, bool, float]] = []
+
+        def send_text(name: str, text: str, *, wait: bool, timeout: float, interval: float = 0.25):
+            del interval
+            send_calls.append((name, text, wait, timeout))
+            return {"type": "codex", "state": "completed", "ready": True}
+
+        monkeypatch.setattr(core, "send_text", send_text)
+
+        cli_main(["prod", "--timeout", "12", TEST_SESSION])
+
+        assert send_calls == [(TEST_SESSION, "Address all requested review comments.", False, 12.0)]
+        assert "Sent 1 prod message(s)." in capsys.readouterr().out
+
+    def test_prod_with_wait_keeps_timeout_strict(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(
+            core,
+            "plan_prod_actions",
+            lambda **kwargs: [
+                {
+                    "session": TEST_SESSION,
+                    "pr": "1614",
+                    "pr_review": "CHANGES_REQUESTED",
+                    "pr_merge_state": "DIRTY",
+                    "skipped": False,
+                    "rule": "changes-requested",
+                    "prompt": "Address all requested review comments.",
+                }
+            ],
+        )
+
+        def send_text(name: str, text: str, *, wait: bool, timeout: float, interval: float = 0.25):
+            del name, text, wait, timeout, interval
+            raise core.AgentWaitTimeout(TEST_SESSION, "running")
+
+        monkeypatch.setattr(core, "send_text", send_text)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["prod", "--wait", TEST_SESSION])
+
+        assert exc_info.value.code == 1
+        assert "Timed out waiting for session" in capsys.readouterr().err
+
+    def test_prod_reports_config_errors(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        monkeypatch.setattr(core, "plan_prod_actions", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no rules")))
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["prod"])
+
+        assert exc_info.value.code == 1
+        assert "no rules" in capsys.readouterr().err
 
     def test_new_with_agent_and_prompt_uses_plain_mode(self, monkeypatch: pytest.MonkeyPatch, capsys):
         new_calls: list[tuple[str, str | None, str | None]] = []
@@ -1028,6 +1500,49 @@ class TestCLI:
         assert new_calls == [("my-worktree", "/tmp/my-worktree", None)]
         assert "Created session 'my-worktree'" in capsys.readouterr().out
 
+    def test_new_with_directory_uses_default_profile_mode(self, monkeypatch: pytest.MonkeyPatch, capsys):
+        create_calls: list[tuple[str, dict[str, object]]] = []
+        new_calls: list[str] = []
+
+        monkeypatch.setattr(core, "session_exists", lambda name: False)
+        monkeypatch.setattr(
+            core,
+            "load_profiles",
+            lambda path=None: {"default": core.SessionProfile(name="default", command=("codex", "--profile", "yolo"))},
+        )
+        monkeypatch.setattr(
+            core,
+            "create_profile_session",
+            lambda name, **kwargs: create_calls.append((name, kwargs)),
+        )
+        monkeypatch.setattr(
+            core,
+            "new_session",
+            lambda name, *, directory=None, desc=None, command=None: new_calls.append(name),
+        )
+
+        cli_main(["new", "rename-types", "-c", "/tmp/myapp"])
+
+        assert create_calls == [
+            (
+                "rename-types",
+                {
+                    "profile_name": None,
+                    "issue": None,
+                    "agent": None,
+                    "repo": None,
+                    "directory": "/tmp/myapp",
+                    "branch": None,
+                    "base_ref": None,
+                    "no_agent": False,
+                    "prompt": None,
+                    "desc": None,
+                },
+            )
+        ]
+        assert new_calls == []
+        assert "Created session 'rename-types'" in capsys.readouterr().out
+
     def test_new_without_name_auto_uniqueifies_inferred_name(self, monkeypatch: pytest.MonkeyPatch, capsys):
         new_calls: list[tuple[str, str | None, str | None]] = []
         existing = {"agentic-trace-analyzer", "agentic-trace-analyzer-1"}
@@ -1062,8 +1577,10 @@ class TestCLI:
     def test_launch_agent_session_waits_before_prompt(self, monkeypatch: pytest.MonkeyPatch):
         send_keys_calls: list[tuple[str, str]] = []
         send_text_calls: list[tuple[str, str, bool, float]] = []
+        metadata_calls: list[tuple[str, str, str]] = []
 
         monkeypatch.setattr(core, "send_keys", lambda name, text: send_keys_calls.append((name, text)))
+        monkeypatch.setattr(core, "set_metadata", lambda name, key, value: metadata_calls.append((name, key, value)))
         monkeypatch.setattr(
             core,
             "send_text",
@@ -1074,6 +1591,28 @@ class TestCLI:
 
         assert send_keys_calls == [(TEST_SESSION, "codex")]
         assert send_text_calls == [(TEST_SESSION, "1+3", True, 12.0)]
+        assert metadata_calls == [(TEST_SESSION, "trace_agent", "codex")]
+
+    def test_launch_agent_session_reports_undelivered_initial_prompt(self, monkeypatch: pytest.MonkeyPatch):
+        send_keys_calls: list[tuple[str, str]] = []
+
+        monkeypatch.setattr(core, "send_keys", lambda name, text: send_keys_calls.append((name, text)))
+        monkeypatch.setattr(core, "set_metadata", lambda *args: None)
+
+        def raise_timeout(name: str, text: str, *, wait: bool = False, timeout: float = 30.0, interval: float = 0.25):
+            del name, text, wait, timeout, interval
+            raise RuntimeError(f"Timed out waiting for session '{TEST_SESSION}' to become ready (last state: running)")
+
+        monkeypatch.setattr(core, "send_text", raise_timeout)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            core.launch_agent_session(TEST_SESSION, "codex", prompt="write note.txt alpha")
+
+        message = str(exc_info.value)
+        assert send_keys_calls == [(TEST_SESSION, "codex")]
+        assert "Initial prompt was not delivered" in message
+        assert f"tp send --wait {TEST_SESSION} 'write note.txt alpha'" in message
+        assert "startup modal or trust prompt" in message
 
     def test_launch_agent_session_restores_expected_cwd_before_launch(self, fake_tmux: FakeTmux, tmp_path):
         expected_cwd = str(tmp_path)

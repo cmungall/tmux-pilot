@@ -276,6 +276,30 @@ def test_cli_send_wait_uses_codex_transcript_state_with_real_tmux(
     wait_for(lambda: second.read_text() == "beta\n", timeout=3.0, message="timed out waiting for second.txt contents")
 
 
+def test_initial_prompt_timeout_leaves_prompt_undelivered_until_codex_startup_modal_is_cleared(
+    real_tmux: RealTmuxServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = "mock-codex-startup-blocked"
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    launch_mock_codex(session, tmp_path)
+
+    with pytest.raises(RuntimeError, match=f"Timed out waiting for session '{session}'"):
+        core.send_text(session, "write note.txt alpha", wait=True, timeout=0.3)
+
+    note = tmp_path / "note.txt"
+    assert not note.exists()
+
+    core.send_keys(session, "1")
+    wait_for_mock_codex_prompt(session)
+
+    core.send_keys(session, "write note.txt alpha")
+
+    wait_for(note.exists, timeout=3.0, message="timed out waiting for note.txt after follow-up send")
+    wait_for(lambda: note.read_text() == "alpha\n", timeout=3.0, message="timed out waiting for note.txt contents")
+
+
 def test_cli_send_wait_uses_claude_transcript_state_with_real_tmux(
     real_tmux: RealTmuxServer,
     tmp_path: Path,
@@ -335,10 +359,10 @@ branch_prefix = "task"
     )
     monkeypatch.setattr(core, "PROFILE_CONFIG_PATH", config)
 
-    session = "pi-task"
+    session = f"{repo.name}-pi-task"
     cli_main(["new", session, "--profile", "pi", "--repo", str(repo)])
 
-    expected_worktree = worktrees / f"{repo.name}-{session}"
+    expected_worktree = worktrees / session
     wait_for_pi_ready(session, timeout=12.0)
 
     status = core.get_session_status(session)
@@ -346,13 +370,13 @@ branch_prefix = "task"
     assert status["working_dir"] == str(expected_worktree)
     assert status["process"] == "pi"
     assert status["agent"]["type"] == "pi"
-    assert status["metadata"]["branch"] == "task/pi-task"
+    assert status["metadata"]["branch"] == f"task/{session}"
     assert subprocess.run(
         ["git", "-C", str(expected_worktree), "rev-parse", "--abbrev-ref", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
-    ).stdout.strip() == "task/pi-task"
+    ).stdout.strip() == f"task/{session}"
 
     core.send_keys(session, "/name tmux-pilot-pi")
     wait_for_output(session, "Session name set: tmux-pilot-pi", timeout=5.0)

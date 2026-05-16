@@ -34,6 +34,8 @@ METADATA_KEYS = (
     "pr_merge_state",
     "last_refresh",
     "pushing",
+    "trace_agent",
+    "trace_path",
 )
 
 # Map pane_current_command to friendly process names
@@ -57,6 +59,7 @@ NODE_DISAMBIGUATION: dict[str, str] = {
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 PROFILE_CONFIG_PATH = Path.home() / ".config" / "tmux-pilot" / "profiles.toml"
+_RESERVED_CONFIG_TABLES = {"prod"}
 _DEFAULT_CLONE_BASE = "~/repos"
 _DEFAULT_WORKTREE_BASE = "~/worktrees"
 _SEND_KEYS_SETTLE_DELAY = 0.1
@@ -66,7 +69,7 @@ _PI_SESSION_DIR_TEMPLATE = "{worktree}/.tmux-pilot/pi/sessions"
 _BUILTIN_PROFILE_DEFS: dict[str, dict[str, object]] = {
     "codex": {
         "command": ["codex", "--profile", "yolo"],
-        "prompt_wait_timeout": 10.0,
+        "prompt_wait_timeout": 30.0,
     },
     "claude": {
         "command": ["claude", "--permission-mode", "bypassPermissions"],
@@ -115,6 +118,34 @@ class SessionProfile:
             return self.command
         parts = [self.agent.strip(), *shlex.split(self.agent_args)]
         return tuple(part for part in parts if part)
+
+
+@dataclass(frozen=True)
+class ProdRule:
+    """Configured `tp prod` rule."""
+
+    name: str
+    match: dict[str, tuple[str, ...]]
+    prompt: str
+
+
+@dataclass(frozen=True)
+class ProdConfig:
+    """Resolved `tp prod` config."""
+
+    refresh: bool = True
+    rules: tuple[ProdRule, ...] = ()
+
+
+class AgentWaitTimeout(RuntimeError):
+    """Raised when an agent stays busy past the requested wait timeout."""
+
+    def __init__(self, session_name: str, last_state: str) -> None:
+        self.session_name = session_name
+        self.last_state = last_state
+        super().__init__(
+            f"Timed out waiting for session '{session_name}' to become ready (last state: {last_state})"
+        )
 
 
 def _run(
@@ -330,6 +361,28 @@ def list_sessions(
     return sessions
 
 
+def resolve_sessions(
+    *,
+    names: list[str] | None = None,
+    status: str | None = None,
+    repo: str | None = None,
+    process: str | None = None,
+) -> list[SessionInfo]:
+    """Return all sessions or a named subset, preserving the requested order."""
+    sessions = list_sessions(status=status, repo=repo, process=process)
+    if not names:
+        return sessions
+
+    by_name = {session.name: session for session in sessions}
+    missing = [name for name in names if name not in by_name]
+    if missing:
+        if len(missing) == 1:
+            raise RuntimeError(f"Session '{missing[0]}' not found")
+        formatted = ", ".join(f"'{name}'" for name in missing)
+        raise RuntimeError(f"Sessions not found: {formatted}")
+    return [by_name[name] for name in names]
+
+
 def get_metadata(session_name: str, key: str) -> str:
     """Get a single @metadata value from a session using display-message."""
     return _tmux("display-message", "-t", session_name, "-p", f"#{{@{key}}}", check=False)
@@ -465,6 +518,16 @@ def send_keys(name: str, text: str) -> None:
     _tmux("send-keys", "-t", name, "Enter")
 
 
+def _initial_prompt_failure_message(session_name: str, prompt: str, exc: RuntimeError) -> str:
+    retry_command = f"tp send --wait {shlex.quote(session_name)} {shlex.quote(prompt)}"
+    return (
+        f"{exc}\n"
+        f"Initial prompt was not delivered to session '{session_name}'.\n"
+        f"If the agent is still starting, retry with: {retry_command}\n"
+        "If Codex is blocked on a startup modal or trust prompt, dismiss it first and then rerun that command."
+    )
+
+
 def send_text(
     name: str,
     text: str,
@@ -572,15 +635,18 @@ def _is_inside_tmux() -> bool:
     return "TMUX" in os.environ
 
 
-def _load_profile_tables(config_path: Path) -> dict[str, dict[str, object]]:
+def _load_config_data(config_path: Path) -> dict[str, object]:
     if not config_path.exists():
         return {}
 
     with config_path.open("rb") as handle:
         data = tomllib.load(handle)
 
-    if not isinstance(data, dict):
-        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_profile_tables(config_path: Path) -> dict[str, dict[str, object]]:
+    data = _load_config_data(config_path)
 
     if isinstance(data.get("profiles"), dict):
         source = data["profiles"]
@@ -590,7 +656,76 @@ def _load_profile_tables(config_path: Path) -> dict[str, dict[str, object]]:
             tables["default"] = default_values
         return tables
 
-    return {name: values for name, values in data.items() if isinstance(values, dict)}
+    return {
+        name: values
+        for name, values in data.items()
+        if isinstance(values, dict) and name not in _RESERVED_CONFIG_TABLES
+    }
+
+
+def _coerce_config_bool(value: object, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise RuntimeError(f"{field_name} in {PROFILE_CONFIG_PATH} must be true or false")
+
+
+def _normalize_prod_match(value: object, *, field_name: str) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        parts = tuple(str(item).strip() for item in value if str(item).strip())
+        if parts:
+            return parts
+        raise RuntimeError(f"{field_name} in {PROFILE_CONFIG_PATH} must not be empty")
+    normalized = str(value).strip()
+    if normalized:
+        return (normalized,)
+    raise RuntimeError(f"{field_name} in {PROFILE_CONFIG_PATH} must not be empty")
+
+
+def load_prod_config(path: Path | None = None) -> ProdConfig:
+    """Load configurable `tp prod` rules from TOML."""
+    config_path = path or PROFILE_CONFIG_PATH
+    data = _load_config_data(config_path)
+    prod_data = data.get("prod")
+    if not isinstance(prod_data, dict):
+        return ProdConfig()
+
+    refresh = True
+    if "refresh" in prod_data:
+        refresh = _coerce_config_bool(prod_data["refresh"], field_name="[prod].refresh")
+
+    raw_rules = prod_data.get("rules", [])
+    if not isinstance(raw_rules, list):
+        raise RuntimeError(f"[prod].rules in {config_path} must be an array of tables")
+
+    rules: list[ProdRule] = []
+    for index, raw_rule in enumerate(raw_rules, start=1):
+        if not isinstance(raw_rule, dict):
+            raise RuntimeError(f"[prod].rules[{index}] in {config_path} must be a table")
+
+        prompt = str(raw_rule.get("prompt", "")).strip()
+        if not prompt:
+            raise RuntimeError(f"[prod].rules[{index}] in {config_path} is missing a prompt")
+
+        raw_match = raw_rule.get("match", raw_rule.get("when"))
+        if not isinstance(raw_match, dict) or not raw_match:
+            raise RuntimeError(f"[prod].rules[{index}] in {config_path} must define match criteria")
+
+        match = {
+            str(key): _normalize_prod_match(value, field_name=f"[prod].rules[{index}].match.{key}")
+            for key, value in raw_match.items()
+        }
+        rules.append(
+            ProdRule(
+                name=str(raw_rule.get("name", f"rule-{index}")).strip() or f"rule-{index}",
+                match=match,
+                prompt=prompt,
+            )
+        )
+
+    return ProdConfig(
+        refresh=refresh,
+        rules=tuple(rules),
+    )
 
 
 def _resolve_profile_values(
@@ -642,6 +777,29 @@ def _command_to_agent_fields(command: tuple[str, ...]) -> tuple[str, str]:
     if not command:
         return "", ""
     return command[0], " ".join(command[1:])
+
+
+def _infer_trace_agent_from_command(command: str) -> str:
+    """Infer a transcript-backed agent type from a launch command string."""
+    if not command:
+        return ""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+
+    executable = ""
+    for part in parts:
+        if "=" in part and not part.startswith(("/", ".", "~")):
+            continue
+        executable = Path(part).name.lower()
+        break
+
+    if executable == "claude":
+        return "claude-code"
+    if executable in {"claude-code", "codex", "pi"}:
+        return executable
+    return ""
 
 
 def load_profiles(path: Path | None = None) -> dict[str, SessionProfile]:
@@ -698,10 +856,6 @@ def should_use_profile_mode(
         return True
     if agent:
         return False
-    if prompt:
-        return "default" in profiles and not directory
-    if directory:
-        return False
     return "default" in profiles
 
 
@@ -755,6 +909,23 @@ def resolve_session_profile(
     )
 
 
+def _should_bootstrap_profile_workspace(
+    *,
+    directory: str | None = None,
+    explicit_repo: str | None = None,
+    configured_repo: str = "",
+    issue: int | None = None,
+    branch: str | None = None,
+    base_ref: str | None = None,
+) -> bool:
+    """Return True when profile mode should create a task worktree."""
+    if explicit_repo or issue is not None or branch or base_ref:
+        return True
+    if directory:
+        return False
+    return bool(configured_repo)
+
+
 def _slugify_branch_component(value: str) -> str:
     """Normalize a session name so it is safe to embed in a git branch name."""
     return re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-").lower()
@@ -805,13 +976,19 @@ def launch_agent_session(
     prompt_timeout: float = 30.0,
 ) -> None:
     """Launch a shell command in a tmux session and optionally send a prompt."""
+    trace_agent = _infer_trace_agent_from_command(command)
+    if trace_agent:
+        set_metadata(session_name, "trace_agent", trace_agent)
     if expected_cwd:
         _ensure_session_cwd(session_name, expected_cwd)
     send_keys(session_name, command)
     if expected_cwd:
         _verify_session_cwd_after_launch(session_name, expected_cwd)
     if prompt:
-        send_text(session_name, prompt, wait=True, timeout=prompt_timeout)
+        try:
+            send_text(session_name, prompt, wait=True, timeout=prompt_timeout)
+        except RuntimeError as exc:
+            raise RuntimeError(_initial_prompt_failure_message(session_name, prompt, exc)) from exc
 
 
 def _git_root(path: str) -> str:
@@ -984,6 +1161,87 @@ def _render_profile_value(value: str, context: dict[str, str]) -> str:
         raise RuntimeError(f"Invalid profile template '{value}': {exc}") from exc
 
 
+def _prod_session_context(session: SessionInfo) -> dict[str, str]:
+    """Flatten session state into template/match variables for `tp prod`."""
+    repo_path = session.metadata.get("repo", "")
+    context = {
+        "name": session.name,
+        "session_name": session.name,
+        "process": session.process,
+        "working_dir": session.working_dir,
+        "dir": session.working_dir,
+        "pid": session.pid,
+        "agent_state": session.agent_state,
+        "repo_name": Path(repo_path or session.working_dir or session.name).name,
+    }
+    context.update({key: value for key, value in session.metadata.items() if value})
+    pr = context.get("pr", "")
+    context["pr_display"] = f"#{pr}" if pr else "-"
+    return {key: str(value) for key, value in context.items()}
+
+
+def _prod_rule_matches(rule: ProdRule, context: dict[str, str]) -> bool:
+    """Return True when all match predicates agree with the flattened session context."""
+    for key, expected_values in rule.match.items():
+        actual = context.get(key, "").strip().casefold()
+        if not any(actual == candidate.strip().casefold() for candidate in expected_values):
+            return False
+    return True
+
+
+def plan_prod_actions(
+    *,
+    names: list[str] | None = None,
+    repo: str | None = None,
+    refresh: bool | None = None,
+    config_path: Path | None = None,
+) -> list[dict[str, object]]:
+    """Resolve `tp prod` prompts for sessions, using the first matching configured rule."""
+    config = load_prod_config(config_path)
+    if not config.rules:
+        raise RuntimeError(f"No [prod] rules configured in {config_path or PROFILE_CONFIG_PATH}")
+
+    should_refresh = config.refresh if refresh is None else refresh
+    if should_refresh:
+        from . import reaper
+
+        reaper.refresh_pr_metadata(names=names, repo=repo)
+
+    sessions = resolve_sessions(names=names, repo=repo)
+    actions: list[dict[str, object]] = []
+    for session in sessions:
+        context = _prod_session_context(session)
+        matched_rule: ProdRule | None = None
+        for rule in config.rules:
+            if _prod_rule_matches(rule, context):
+                matched_rule = rule
+                break
+
+        action: dict[str, object] = {
+            "session": session.name,
+            "process": session.process,
+            "branch": context.get("branch", ""),
+            "pr": context.get("pr", "") or None,
+            "pr_state": context.get("pr_state", "") or None,
+            "pr_review": context.get("pr_review", "") or None,
+            "pr_merge_state": context.get("pr_merge_state", "") or None,
+            "skipped": matched_rule is None,
+            "reason": "no-rule" if matched_rule is None else "",
+        }
+        if matched_rule is None:
+            actions.append(action)
+            continue
+
+        action.update(
+            {
+                "rule": matched_rule.name,
+                "prompt": _render_profile_value(matched_rule.prompt, context),
+            }
+        )
+        actions.append(action)
+    return actions
+
+
 def _profile_context(
     *,
     profile: SessionProfile,
@@ -1040,6 +1298,16 @@ def _initial_prompt_desc(desc: str | None, issue_title: str) -> str | None:
     return issue_title or desc
 
 
+def _bootstrap_worktree_leaf_name(repo_name: str, session_name: str) -> str:
+    """Build a stable worktree leaf name without repeating the repo prefix."""
+    repo_name_folded = repo_name.casefold()
+    session_name_folded = session_name.casefold()
+    repo_prefix = f"{repo_name_folded}-"
+    if session_name_folded == repo_name_folded or session_name_folded.startswith(repo_prefix):
+        return session_name
+    return f"{repo_name}-{session_name}"
+
+
 def _create_bootstrap_workspace(
     *,
     profile: SessionProfile,
@@ -1051,7 +1319,7 @@ def _create_bootstrap_workspace(
 ) -> dict[str, str]:
     repo_path = _resolve_repo_source(repo_source, clone_base=profile.clone_base)
     worktree_base = Path(profile.worktree_base).expanduser().resolve()
-    worktree_dir = worktree_base / f"{Path(repo_path).name}-{name}"
+    worktree_dir = worktree_base / _bootstrap_worktree_leaf_name(Path(repo_path).name, name)
 
     branch_name = branch or f"{profile.branch_prefix}/{_slugify_branch_component(name)}"
     if issue is not None and branch is None:
@@ -1094,9 +1362,19 @@ def create_profile_session(
     if profile is None:
         raise RuntimeError("No profile, agent, or repo bootstrap configuration was resolved")
 
-    repo_source = profile.repo
-    if not repo_source and (issue is not None or branch or base_ref):
-        repo_source = _git_root(directory or os.getcwd())
+    configured_repo_source = profile.repo
+    repo_source = ""
+    if _should_bootstrap_profile_workspace(
+        directory=directory,
+        explicit_repo=repo,
+        configured_repo=configured_repo_source,
+        issue=issue,
+        branch=branch,
+        base_ref=base_ref,
+    ):
+        repo_source = repo or configured_repo_source
+        if not repo_source and (issue is not None or branch or base_ref):
+            repo_source = _git_root(directory or os.getcwd())
     if issue is not None and not repo_source:
         raise RuntimeError("Issue-based sessions require a git repo; pass --repo or run tp from a git checkout")
     if (branch or base_ref) and not repo_source:
@@ -1192,6 +1470,126 @@ def _get_agent_state(
     )
 
 
+def _cache_session_trace(
+    session_name: str,
+    *,
+    agent_type: str,
+    transcript_path: Path,
+    meta: dict[str, str] | None = None,
+) -> None:
+    """Persist a stable transcript binding on the tmux session."""
+    normalized_path = _normalize_directory(str(transcript_path))
+    if not normalized_path:
+        return
+
+    if meta is None or meta.get("trace_agent", "") != agent_type:
+        set_metadata(session_name, "trace_agent", agent_type)
+        if meta is not None:
+            meta["trace_agent"] = agent_type
+    if meta is None or meta.get("trace_path", "") != normalized_path:
+        set_metadata(session_name, "trace_path", normalized_path)
+        if meta is not None:
+            meta["trace_path"] = normalized_path
+
+
+def _resolve_session_trace(
+    session_name: str,
+    *,
+    pane_cmd: str = "",
+    pane_path: str = "",
+    pane_pid: str = "",
+    meta: dict[str, str] | None = None,
+    refresh: bool = False,
+    lines: int = 0,
+) -> dict[str, object]:
+    """Resolve the transcript trace bound to a tmux session."""
+    from . import agent_sessions
+
+    if not pane_cmd and not pane_path and not pane_pid and meta is None:
+        pane_cmd, pane_path, pane_pid, meta = _session_pane_details(session_name)
+    if meta is None:
+        meta = {}
+
+    detected_process = _detect_process(pane_cmd, session_name, pane_pid)
+    agent_type = meta.get("trace_agent", "")
+    if not agent_sessions.is_supported_agent_type(agent_type):
+        agent_type = detected_process if agent_sessions.is_supported_agent_type(detected_process) else ""
+
+    cached_path_str = meta.get("trace_path", "")
+    cached_path = Path(cached_path_str).expanduser() if cached_path_str else None
+    if cached_path is not None:
+        try:
+            cached_path = cached_path.resolve()
+        except OSError:
+            cached_path = cached_path.expanduser()
+    if not agent_type and cached_path is not None and cached_path.exists():
+        agent_type = agent_sessions.infer_transcript_agent_type(cached_path)
+
+    dynamic_agent = detected_process if agent_sessions.is_supported_agent_type(detected_process) else agent_type
+    dynamic_path: Path | None = None
+    if dynamic_agent and pane_path and (refresh or cached_path is None or not cached_path.exists()):
+        dynamic_path = agent_sessions.find_transcript_for_cwd(dynamic_agent, pane_path)
+
+    transcript_path: Path | None = None
+    source = "none"
+    if dynamic_path is not None:
+        transcript_path = dynamic_path
+        source = "dynamic"
+        agent_type = dynamic_agent
+    elif cached_path is not None and cached_path.exists():
+        transcript_path = cached_path
+        source = "cached"
+
+    transcript_state = None
+    transcript_cwd = ""
+    tail: list[str] = []
+    if transcript_path is not None:
+        if agent_type:
+            _cache_session_trace(
+                session_name,
+                agent_type=agent_type,
+                transcript_path=transcript_path,
+                meta=meta,
+            )
+            transcript_state = agent_sessions.read_transcript_state(agent_type, transcript_path)
+        transcript_cwd = agent_sessions.transcript_cwd(transcript_path)
+        tail = agent_sessions.read_transcript_tail(transcript_path, lines=lines)
+
+    return {
+        "session": session_name,
+        "agent": agent_type,
+        "path": _normalize_directory(str(transcript_path)) if transcript_path is not None else "",
+        "source": source,
+        "pane_working_dir": pane_path,
+        "transcript_cwd": transcript_cwd,
+        "state": transcript_state.state if transcript_state is not None else "",
+        "timestamp": transcript_state.timestamp if transcript_state is not None else "",
+        "turn_id": transcript_state.turn_id if transcript_state is not None else "",
+        "tail": tail,
+    }
+
+
+def get_session_trace(
+    name: str,
+    *,
+    refresh: bool = False,
+    lines: int = 0,
+) -> dict[str, object]:
+    """Return the transcript trace bound to a tmux session."""
+    if not session_exists(name):
+        raise RuntimeError(f"Session '{name}' not found")
+    pane_cmd, pane_path, pane_pid, meta = _session_pane_details(name)
+    return _resolve_session_trace(
+        name,
+        pane_cmd=pane_cmd,
+        pane_path=pane_path,
+        pane_pid=pane_pid,
+        meta=meta,
+        refresh=refresh,
+        lines=lines,
+    )
+
+
 def _session_pane_details(name: str) -> tuple[str, str, str, dict[str, str]]:
     """Fetch pane command, path, pid, and metadata in one tmux call."""
     pane_fmt = "#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}\t" + _META_FMT
@@ -1234,11 +1632,16 @@ def wait_until_session_ready(
     if not session_exists(name):
         raise RuntimeError(f"Session '{name}' not found")
 
-    from . import agent_sessions
-
     pane_cmd, pane_path, pane_pid, _meta = _session_pane_details(name)
     detected_process = _detect_process(pane_cmd, name, pane_pid)
-    transcript_path: Path | None = None
+    trace = _resolve_session_trace(
+        name,
+        pane_cmd=pane_cmd,
+        pane_path=pane_path,
+        pane_pid=pane_pid,
+        meta=_meta,
+    )
+    transcript_path = Path(str(trace["path"])) if trace.get("path") else None
     deadline = time.monotonic() + timeout
 
     while True:
@@ -1251,10 +1654,17 @@ def wait_until_session_ready(
             transcript_path=transcript_path,
         )
 
-        agent_type = agent.get("type")
-        if isinstance(agent_type, str) and pane_path and transcript_path is None:
-            transcript_path = agent_sessions.find_transcript_for_cwd(agent_type, pane_path)
-            if transcript_path is not None:
+        if transcript_path is None:
+            trace = _resolve_session_trace(
+                name,
+                pane_cmd=pane_cmd,
+                pane_path=pane_path,
+                pane_pid=pane_pid,
+                meta=_meta,
+                refresh=True,
+            )
+            if trace.get("path"):
+                transcript_path = Path(str(trace["path"]))
                 agent = _get_agent_state(
                     name,
                     detected_process,
@@ -1266,8 +1676,8 @@ def wait_until_session_ready(
         if _agent_is_ready(agent):
             return agent
         if time.monotonic() >= deadline:
-            state = agent.get("state", "unknown")
-            raise RuntimeError(f"Timed out waiting for session '{name}' to become ready (last state: {state})")
+            state = str(agent.get("state", "unknown"))
+            raise AgentWaitTimeout(name, state)
         time.sleep(interval)
 
 
@@ -1403,12 +1813,21 @@ def get_session_status(name: str) -> dict:
         raise RuntimeError(f"Session '{name}' not found")
 
     pane_cmd, pane_path, pane_pid, meta = _session_pane_details(name)
+    trace = _resolve_session_trace(
+        name,
+        pane_cmd=pane_cmd,
+        pane_path=pane_path,
+        pane_pid=pane_pid,
+        meta=meta,
+    )
     metadata_updated_at = _get_metadata_updated_at(name, list(meta))
     scrollback = peek_session(name, lines=5)
+    transcript_path = Path(str(trace["path"])) if trace.get("path") else None
     agent = _get_agent_state(
         name,
         _detect_process(pane_cmd, name, pane_pid),
         pane_path=pane_path,
+        transcript_path=transcript_path,
     )
 
     return {
@@ -1420,6 +1839,7 @@ def get_session_status(name: str) -> dict:
         "metadata_updated_at": metadata_updated_at,
         "scrollback_tail": scrollback,
         "agent": agent,
+        "trace": trace,
     }
 
 

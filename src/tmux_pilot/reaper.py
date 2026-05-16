@@ -47,18 +47,7 @@ def _resolve_sessions(
     repo: str | None = None,
 ) -> list[core.SessionInfo]:
     """Return all sessions or a named subset, preserving the requested order."""
-    sessions = core.list_sessions(repo=repo)
-    if not names:
-        return sessions
-
-    by_name = {session.name: session for session in sessions}
-    missing = [name for name in names if name not in by_name]
-    if missing:
-        if len(missing) == 1:
-            raise RuntimeError(f"Session '{missing[0]}' not found")
-        formatted = ", ".join(f"'{name}'" for name in missing)
-        raise RuntimeError(f"Sessions not found: {formatted}")
-    return [by_name[name] for name in names]
+    return core.resolve_sessions(names=names, repo=repo)
 
 
 def _refresh_session_pr_metadata(session: core.SessionInfo) -> dict:

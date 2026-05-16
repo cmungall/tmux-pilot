@@ -10,6 +10,7 @@ from pathlib import Path
 _TRANSCRIPT_SCAN_LIMIT = 200
 _HEAD_SCAN_LINES = 8
 _READ_CHUNK_SIZE = 8192
+SUPPORTED_AGENT_TYPES = ("codex", "claude-code", "pi")
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,11 @@ def pi_sessions_root() -> Path:
     """Return the Pi sessions directory."""
     agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent")).expanduser()
     return agent_dir / "sessions"
+
+
+def is_supported_agent_type(agent_type: str) -> bool:
+    """Return True when *agent_type* has transcript support."""
+    return agent_type in SUPPORTED_AGENT_TYPES
 
 
 def _normalize_cwd(cwd: str) -> str:
@@ -103,6 +109,36 @@ def transcript_cwd(path: Path, *, max_lines: int = _HEAD_SCAN_LINES) -> str:
                     return _normalize_cwd(cwd)
     except OSError:
         return ""
+    return ""
+
+
+def _first_record(path: Path, *, max_lines: int = _HEAD_SCAN_LINES) -> dict | None:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for index, line in enumerate(handle):
+                if index >= max_lines:
+                    break
+                record = _load_json_line(line)
+                if record is not None:
+                    return record
+    except OSError:
+        return None
+    return None
+
+
+def infer_transcript_agent_type(path: Path) -> str:
+    """Infer the owning agent type for a transcript file."""
+    record = _first_record(path)
+    if record is None:
+        return ""
+
+    record_type = record.get("type")
+    if record_type == "session_meta":
+        return "codex"
+    if record_type == "session" and record.get("version") == 3:
+        return "pi"
+    if record_type in {"user", "assistant"} and isinstance(record.get("sessionId"), str):
+        return "claude-code"
     return ""
 
 
@@ -416,3 +452,64 @@ def get_pi_transcript_state(
     if path is None:
         return None
     return read_pi_transcript_state(path)
+
+
+def read_transcript_state(agent_type: str, path: Path) -> TranscriptState | None:
+    """Read transcript state for *agent_type* from *path*."""
+    if agent_type == "codex":
+        return read_codex_transcript_state(path)
+    if agent_type == "claude-code":
+        return read_claude_transcript_state(path)
+    if agent_type == "pi":
+        return read_pi_transcript_state(path)
+    return None
+
+
+def read_transcript_tail(path: Path, *, lines: int = 20) -> list[str]:
+    """Return the last *lines* raw JSONL lines from *path*."""
+    if lines <= 0:
+        return []
+
+    tail: list[str] = []
+    for line in _iter_lines_reverse(path):
+        tail.append(line)
+        if len(tail) >= lines:
+            break
+    tail.reverse()
+    return tail
+
+
+def read_transcript_records(
+    path: Path,
+    *,
+    limit: int | None = 20,
+) -> list[dict]:
+    """Return JSON records from *path*, preserving file order.
+
+    When *limit* is provided, returns the last N valid JSON object records.
+    When *limit* is None, returns every valid JSON object record in the file.
+    """
+    records: list[dict] = []
+    if limit is not None and limit <= 0:
+        return records
+
+    if limit is None:
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    record = _load_json_line(line)
+                    if record is not None:
+                        records.append(record)
+        except OSError:
+            return []
+        return records
+
+    for line in _iter_lines_reverse(path):
+        record = _load_json_line(line)
+        if record is None:
+            continue
+        records.append(record)
+        if len(records) >= limit:
+            break
+    records.reverse()
+    return records

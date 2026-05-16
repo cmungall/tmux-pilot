@@ -17,7 +17,7 @@ Triggers:
 - no profile settings apply
 - explicit `--here`
 - explicit `--agent` without `--profile`, `--issue`, `--repo`, or `--no-agent`
-- explicit `--directory` when profile/worktree bootstrap mode is not otherwise selected
+- explicit `--directory` when no resolved profile applies
 
 Behavior:
 
@@ -53,17 +53,19 @@ Triggers:
 - `--no-agent`
 - `--branch`
 - `--base-ref`
-- an existing `[default]` profile when plain mode is not forced and `--directory` is absent
+- an existing `[default]` profile when plain mode is not forced
 
 Behavior:
 
 - resolves repo, worktree base, clone base, command, env, base ref, prompt timeout, and branch prefix from the selected profile
-- uses `--directory` for an in-place launch when the resolved profile does not require repo bootstrap
+- uses `--directory` for an in-place launch unless bootstrap semantics were explicitly requested with `--repo`, `--issue`, `--branch`, or `--base-ref`
 - otherwise creates a task worktree from the configured repo and base ref
 - records repo and branch metadata
 - optionally launches the resolved agent
 - optionally sends `--prompt`
 - verifies that the pane cwd stays on the requested directory or created worktree when launching the agent
+
+Bootstrap worktrees are named `<repo>-<session>` by default. If `NAME` already starts with `<repo>-`, that session name is reused as the worktree leaf directory instead of repeating the repo prefix.
 
 Examples:
 
@@ -94,12 +96,17 @@ Supported fields:
 - `agent`: legacy alias for `command`; still accepted
 - `agent_args`: legacy stable flags appended to `agent`; still accepted
 
+`profiles.toml` can also carry orchestration rules for `tp prod`:
+
+- `[prod].refresh`: whether `tp prod` refreshes PR metadata before matching rules
+- `[[prod.rules]]`: ordered first-match rules with `match = {...}` and `prompt = "..."`
+
 ## Option Semantics
 
 - `--agent`: command to launch in the session, such as `claude`, `claude-code`, or `codex`
 - `--prompt`: initial text to send after the agent launches
 - `NAME`: optional when `--directory` or `--here` is present
-- `--directory`: existing working directory; plain mode creates a bare session there, while an explicit built-in or repo-less profile launches in place
+- `--directory`: existing working directory; plain mode creates a bare session there, while a resolved profile launches in place unless `--repo`, `--issue`, `--branch`, or `--base-ref` asks for bootstrap
 - `--here`: plain mode shortcut for “use the current working directory and infer git metadata”
 - `--repo`: profile mode bootstrap source or repo override
 - `--no-agent`: profile mode only; create the worktree/session but skip launching the configured agent

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "uv-dynamic-versioning"]
 build-backend = "hatchling.build"
 
 [project]
 name = "tmux-pilot"
-version = "0.3.0"
+dynamic = ["version"]
 description = "A thin, opinionated CLI for managing tmux sessions that run AI coding agents"
 readme = "README.md"
 license = "MIT"
@@ -50,6 +50,14 @@ docs = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+fallback-version = "0.0.0"
 
 [tool.mypy]
 python_version = "3.10"

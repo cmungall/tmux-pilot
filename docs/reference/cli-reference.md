@@ -10,8 +10,10 @@ This page is the compact command reference for `tp`. For longer walkthroughs, us
 | `tp new` | create a bare session or a profile-backed task session |
 | `tp peek` | view recent scrollback without attaching |
 | `tp send` | send the next instruction into a live session |
+| `tp prod` | send configured follow-up prompts based on PR/session state |
 | `tp jump` | attach or switch to a session |
 | `tp status` | inspect process, cwd, metadata, and recent output |
+| `tp trace` | inspect the transcript trace bound to a session |
 | `tp clean` | remove done-ish sessions and their worktrees |
 | `tp kill` | kill a session immediately |
 | `tp set` / `tp get` | manage tmux-backed session metadata |
@@ -116,6 +118,37 @@ tp send --wait docs-pass "write regression coverage for the callback"
 tp send --wait --timeout 90 docs-pass "continue with the next failure"
 ```
 
+## `tp prod`
+
+```bash
+tp prod
+tp prod dragon-assign
+tp prod --repo myapp
+tp prod --dry-run --repo myapp
+tp prod --json
+tp prod --no-refresh
+tp prod --wait dragon-assign
+```
+
+`tp prod` reads `[prod]` rules from `~/.config/tmux-pilot/profiles.toml`, refreshes PR metadata by default, and picks the first matching rule for each session. By default it sends immediately; pass `--wait` when you explicitly want readiness checks first.
+
+Example config:
+
+```toml
+[prod]
+[[prod.rules]]
+name = "changes-requested"
+match = { pr_review = "CHANGES_REQUESTED", pr_state = "OPEN" }
+prompt = "Address all requested review comments on {pr_display}, update tests as needed, and push the fixes."
+
+[[prod.rules]]
+name = "merge-blocked"
+match = { pr_state = "OPEN", pr_merge_state = ["BLOCKED", "DIRTY"] }
+prompt = "Your PR {pr_display} is not mergeable. Resolve the merge blockers, then push an update."
+```
+
+Available match/template fields include the session name plus flattened metadata such as `repo`, `branch`, `desc`, `status`, `pr`, `pr_state`, `pr_review`, and `pr_merge_state`.
+
 ## `tp jump`
 
 ```bash
@@ -137,8 +170,33 @@ tp status docs-pass
 - working directory
 - tmux metadata
 - metadata freshness for cached fields such as PR state
+- cached trace metadata when a transcript has been resolved
 - current agent state
 - recent scrollback
+
+## `tp trace`
+
+```bash
+tp trace docs-pass
+tp trace docs-pass --refresh
+tp trace docs-pass --json
+tp trace docs-pass --show raw --lines 10
+tp trace docs-pass --show json
+tp trace docs-pass --show yaml
+tp trace docs-pass --show tsv
+tp trace docs-pass --show formatted
+tp trace docs-pass --show yaml --color always
+```
+
+`tp trace` resolves the transcript associated with a session, preferring cached `@trace_agent` / `@trace_path` metadata and falling back to a cwd-based scan when needed. This is the command to use when you want to verify which chat/session trace a tmux session is actually bound to.
+
+- `--json` prints the trace binding metadata as JSON
+- `--show raw` prints raw JSONL lines from the transcript
+- `--show json` pretty-prints transcript records as a JSON array
+- `--show yaml` renders transcript records in a YAML-like view
+- `--show tsv` emits normalized transcript rows with tab-separated columns
+- `--show formatted` renders a readable timestamped transcript timeline
+- `--color auto|always|never` controls ANSI color for `--show raw|json|yaml|formatted`
 
 ## `tp clean`
 
@@ -181,6 +239,15 @@ tp refresh --json
 ```
 
 `tp refresh` updates cached PR metadata only. It writes `@pr`, `@pr_state`, `@pr_review`, `@pr_merge_state`, and `@last_refresh`, but it does not kill sessions, remove worktrees, or delete branches.
+
+## Trace Metadata
+
+When `tp` resolves a transcript for a session, it caches:
+
+- `@trace_agent`
+- `@trace_path`
+
+These cached fields are visible in `tp status`, `tp ls --all-metadata`, and `tp ls --json`.
 
 ## `tp reap`
 

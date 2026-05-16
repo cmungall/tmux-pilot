@@ -40,6 +40,8 @@ With the default settings, that command:
 3. Creates worktree `~/worktrees/myapp-auth-fix`.
 4. Starts `codex --profile yolo` in that worktree.
 
+Bootstrap worktrees are named `<repo>-<session>` by default. If the session name already starts with `<repo>-`, `tp` reuses that session name as the worktree directory instead of repeating the repo prefix.
+
 Issue-driven example:
 
 ```bash
