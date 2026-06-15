@@ -18,6 +18,11 @@ ci: lint typecheck test
 install:
     uv sync
 
+install-tool:
+    rm -f dist/tmux_pilot-*.whl
+    uv build --wheel
+    uv tool install --force dist/tmux_pilot-*.whl
+
 build:
     uv build
 
