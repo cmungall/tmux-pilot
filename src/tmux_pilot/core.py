@@ -64,6 +64,7 @@ _DEFAULT_CLONE_BASE = "~/repos"
 _DEFAULT_WORKTREE_BASE = "~/worktrees"
 _SEND_KEYS_SETTLE_DELAY = 0.1
 _CWD_VERIFY_TIMEOUT = 2.0
+_WORKTREE_ADD_TIMEOUT = 180
 _CWD_VERIFY_INTERVAL = 0.05
 _PI_SESSION_DIR_TEMPLATE = "{worktree}/.tmux-pilot/pi/sessions"
 _BUILTIN_PROFILE_DEFS: dict[str, dict[str, object]] = {
@@ -1142,11 +1143,15 @@ def _prepare_worktree(repo_path: str, *, worktree_dir: Path, branch: str, base_r
         raise RuntimeError(f"Worktree path already exists: {worktree_dir}")
 
     if _local_branch_exists(repo_path, branch):
-        _git(["worktree", "add", str(worktree_dir), branch], cwd=repo_path)
+        _git(["worktree", "add", str(worktree_dir), branch], cwd=repo_path, timeout=_WORKTREE_ADD_TIMEOUT)
         return
 
     _fetch_base_ref(repo_path, base_ref)
-    _git(["worktree", "add", "-b", branch, str(worktree_dir), base_ref], cwd=repo_path)
+    _git(
+        ["worktree", "add", "-b", branch, str(worktree_dir), base_ref],
+        cwd=repo_path,
+        timeout=_WORKTREE_ADD_TIMEOUT,
+    )
 
 
 class _TemplateDict(dict[str, str]):
