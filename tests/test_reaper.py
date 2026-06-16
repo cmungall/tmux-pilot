@@ -133,6 +133,63 @@ def test_reap_sessions_include_no_pr(monkeypatch):
     assert results[0]["killed"] is True
 
 
+def test_reap_sessions_ignores_dead_session_without_flag(monkeypatch):
+    # A bare session with no branch is silently skipped unless --include-dead.
+    monkeypatch.setattr(reaper.core, "list_sessions", lambda **kwargs: [_session("dismech-drpla")])
+
+    results = reaper.reap_sessions()
+
+    assert results == []
+
+
+def test_reap_sessions_include_dead_flags_bare_session(monkeypatch):
+    # No branch + cwd not inside any git work tree => a dead orphan session.
+    monkeypatch.setattr(reaper.core, "list_sessions", lambda **kwargs: [_session("dismech-drpla")])
+    monkeypatch.setattr(reaper, "_is_inside_git_worktree", lambda path: False)
+
+    results = reaper.reap_sessions(dry_run=True, include_dead=True)
+
+    assert len(results) == 1
+    assert results[0]["session"] == "dismech-drpla"
+    assert results[0]["reason"] == "dead-session"
+    assert results[0]["action"] == "confirm"
+    assert results[0]["skipped"] is False
+
+
+def test_reap_sessions_dead_session_kills_session_only(monkeypatch):
+    kill_calls: list[str] = []
+    monkeypatch.setattr(reaper.core, "list_sessions", lambda **kwargs: [_session("dismech-drpla")])
+    monkeypatch.setattr(reaper, "_is_inside_git_worktree", lambda path: False)
+    monkeypatch.setattr(reaper.core, "kill_session", lambda name: kill_calls.append(name))
+    # A dead session has no worktree/branch behind it: those ops must never run.
+    monkeypatch.setattr(
+        reaper.core, "_remove_worktree",
+        lambda p: (_ for _ in ()).throw(AssertionError("must not remove worktree")),
+    )
+    monkeypatch.setattr(
+        reaper.core, "_delete_branch",
+        lambda r, b: (_ for _ in ()).throw(AssertionError("must not delete branch")),
+    )
+
+    results = reaper.reap_sessions(include_dead=True)
+
+    assert kill_calls == ["dismech-drpla"]
+    assert results[0]["killed"] is True
+    assert results[0]["worktree_removed"] is False
+    assert results[0]["branch_deleted"] is False
+
+
+def test_reap_sessions_dead_requires_non_worktree(monkeypatch):
+    # A no-branch session that is still inside a work tree (e.g. detached HEAD)
+    # is NOT dead — there may be real work there.
+    monkeypatch.setattr(reaper.core, "list_sessions", lambda **kwargs: [_session("detached")])
+    monkeypatch.setattr(reaper, "_is_inside_git_worktree", lambda path: True)
+
+    results = reaper.reap_sessions(include_dead=True)
+
+    assert results == []
+
+
 def test_refresh_pr_metadata_updates_fields(monkeypatch):
     set_calls: list[tuple[str, str, str]] = []
 

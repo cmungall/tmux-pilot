@@ -41,6 +41,52 @@ def _has_uncommitted(working_dir: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def _is_inside_git_worktree(working_dir: str) -> bool:
+    """True if *working_dir* is inside any git work tree."""
+    if not working_dir:
+        return False
+    result = subprocess.run(
+        ["git", "-C", working_dir, "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True, timeout=5,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _is_dead_session(session: core.SessionInfo) -> bool:
+    """A bare, branchless session whose cwd is no longer inside a git work tree.
+
+    These are typically sessions whose worktree was removed out from under them:
+    the shell's cwd falls back to ``$HOME``. There is nothing to reap but the
+    session itself — no PR, no branch, no worktree — so reaping kills only the
+    tmux session and never touches disk.
+    """
+    return not _is_inside_git_worktree(session.working_dir)
+
+
+def _dead_session_action(session: core.SessionInfo, *, dry_run: bool) -> dict:
+    """Build (and, unless dry-run, perform) the reap of a dead orphan session."""
+    action: dict = {
+        "session": session.name,
+        "branch": "",
+        "pr": None,
+        "pr_state": None,
+        "pr_review": None,
+        "pr_merge_state": None,
+        "last_refresh": None,
+        "killed": False,
+        "worktree_removed": False,
+        "branch_deleted": False,
+        "skipped": False,
+        "reason": "dead-session",
+    }
+    if dry_run:
+        action["action"] = "confirm"
+        return action
+    core.kill_session(session.name)
+    action["killed"] = True
+    return action
+
+
 def _resolve_sessions(
     names: list[str] | None = None,
     *,
@@ -107,12 +153,17 @@ def reap_sessions(
     dry_run: bool = False,
     force: bool = False,
     include_no_pr: bool = False,
+    include_dead: bool = False,
 ) -> list[dict]:
     """Identify and reap sessions whose PRs are merged.
 
     For each session with a branch, queries GitHub PR status.
     MERGED PRs trigger reaping (kill session, remove worktree, delete branch).
     Sessions with uncommitted changes are skipped unless --force.
+
+    With ``include_dead``, bare branchless sessions whose cwd is no longer inside
+    a git work tree (a worktree removed out from under the session) are also
+    reaped — killing the session only, since there is nothing on disk to remove.
 
     Returns list of action dicts.
     """
@@ -123,6 +174,8 @@ def reap_sessions(
         refresh = _refresh_session_pr_metadata(s)
         branch = refresh.get("branch", "")
         if refresh.get("reason") == "no-branch":
+            if include_dead and _is_dead_session(s):
+                results.append(_dead_session_action(s, dry_run=dry_run))
             continue
 
         working_dir = s.working_dir

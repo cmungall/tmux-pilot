@@ -756,38 +756,55 @@ def cmd_install_hooks(args: argparse.Namespace) -> None:
         print(f"Hooks in {actions['hooks_dir']}, core.hooksPath configured.")
 
 
+def _reap_row(r: dict) -> str:
+    return f"  {r['session']}  branch={r.get('branch') or '-'}  pr=#{r.get('pr') or '-'}  [{r.get('reason', '')}]"
+
+
 def cmd_reap(args: argparse.Namespace) -> None:
     from . import reaper
-    results = reaper.reap_sessions(
-        dry_run=args.dry_run,
+
+    # Always preview first so we never kill before the user confirms.
+    preview = reaper.reap_sessions(
+        dry_run=True,
         force=args.force,
         include_no_pr=args.include_no_pr,
+        include_dead=args.include_dead,
     )
-    if not results:
-        print("No sessions to reap.")
-        return
+    to_reap = [r for r in preview if r.get("action") == "confirm"]
+    skipped = [r for r in preview if r.get("skipped")]
 
     if args.dry_run:
-        print("Dry run -- would reap:")
-        for r in results:
-            flag = r.get("reason", "")
-            print(f"  {r['session']}  branch={r.get('branch', '?')}  pr=#{r.get('pr', '-')}  [{flag}]")
+        if to_reap:
+            print("Would reap:")
+            for r in to_reap:
+                print(_reap_row(r))
+        else:
+            print("Nothing to reap.")
+        if skipped:
+            print("Would skip:")
+            for r in skipped:
+                print(_reap_row(r))
+        return
+
+    if not to_reap:
+        print("No sessions to reap.")
+        if skipped:
+            print(f"({len(skipped)} skipped: " + ", ".join(f"{r['session']} [{r.get('reason', '')}]" for r in skipped) + ")")
         return
 
     if not args.force:
-        names = ", ".join(r["session"] for r in results if r.get("action") == "confirm")
-        if names:
-            resp = input(f"Reap session(s): {names}? [y/N] ")
-            if resp.lower() not in ("y", "yes"):
-                print("Aborted.")
-                return
-            # Actually reap after confirmation
-            results = reaper.reap_sessions(
-                dry_run=False,
-                force=True,
-                include_no_pr=args.include_no_pr,
-            )
+        names = ", ".join(r["session"] for r in to_reap)
+        resp = input(f"Reap {len(to_reap)} session(s): {names}? [y/N] ")
+        if resp.lower() not in ("y", "yes"):
+            print("Aborted.")
+            return
 
+    results = reaper.reap_sessions(
+        dry_run=False,
+        force=args.force,
+        include_no_pr=args.include_no_pr,
+        include_dead=args.include_dead,
+    )
     for r in results:
         parts = [r["session"]]
         if r.get("killed"):
@@ -1089,6 +1106,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_reap.add_argument("--dry-run", action="store_true", help="Preview without executing")
     p_reap.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     p_reap.add_argument("--include-no-pr", action="store_true", help="Also flag clean sessions with no PR")
+    p_reap.add_argument("--include-dead", action="store_true", help="Also reap bare sessions whose worktree is gone (kills the session only)")
 
     # refresh
     p_refresh = sub.add_parser("refresh", help="Refresh cached PR metadata")
