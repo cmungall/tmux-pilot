@@ -434,6 +434,86 @@ def test_resolve_repo_source_clones_github_repo_when_missing(monkeypatch, tmp_pa
     ]
 
 
+def test_prepare_worktree_uses_long_timeout_for_existing_branch(monkeypatch, tmp_path):
+    git_calls: list[tuple[list[str], str, int]] = []
+
+    def fake_git(
+        args: list[str],
+        *,
+        cwd: str,
+        check: bool = True,
+        timeout: int = 15,
+    ) -> str:
+        del check
+        git_calls.append((args, cwd, timeout))
+        return ""
+
+    monkeypatch.setattr(core, "_local_branch_exists", lambda repo_path, branch: True)
+    monkeypatch.setattr(core, "_git", fake_git)
+
+    core._prepare_worktree(
+        "/repo",
+        worktree_dir=tmp_path / "large-repo-worktree",
+        branch="feat/large-repo-worktree",
+        base_ref="origin/main",
+    )
+
+    assert git_calls == [
+        (
+            ["worktree", "add", str(tmp_path / "large-repo-worktree"), "feat/large-repo-worktree"],
+            "/repo",
+            core._WORKTREE_ADD_TIMEOUT,
+        )
+    ]
+
+
+def test_prepare_worktree_uses_long_timeout_for_new_branch(monkeypatch, tmp_path):
+    git_calls: list[tuple[list[str], str, int]] = []
+    fetched_base_refs: list[tuple[str, str]] = []
+
+    def fake_git(
+        args: list[str],
+        *,
+        cwd: str,
+        check: bool = True,
+        timeout: int = 15,
+    ) -> str:
+        del check
+        git_calls.append((args, cwd, timeout))
+        return ""
+
+    monkeypatch.setattr(core, "_local_branch_exists", lambda repo_path, branch: False)
+    monkeypatch.setattr(
+        core,
+        "_fetch_base_ref",
+        lambda repo_path, base_ref: fetched_base_refs.append((repo_path, base_ref)),
+    )
+    monkeypatch.setattr(core, "_git", fake_git)
+
+    core._prepare_worktree(
+        "/repo",
+        worktree_dir=tmp_path / "large-repo-worktree",
+        branch="feat/large-repo-worktree",
+        base_ref="origin/main",
+    )
+
+    assert fetched_base_refs == [("/repo", "origin/main")]
+    assert git_calls == [
+        (
+            [
+                "worktree",
+                "add",
+                "-b",
+                "feat/large-repo-worktree",
+                str(tmp_path / "large-repo-worktree"),
+                "origin/main",
+            ],
+            "/repo",
+            core._WORKTREE_ADD_TIMEOUT,
+        )
+    ]
+
+
 def test_list_sessions_detects_branch_from_worktree(monkeypatch):
     monkeypatch.setattr(core, "tmux_running", lambda: True)
     monkeypatch.setattr(
