@@ -66,6 +66,7 @@ nav:
       - Create Sessions: how-to/create-sessions.md
       - Profiles and Worktrees: how-to/start-task-sessions-with-profiles-and-worktrees.md
       - Wait for Interactive Agents: how-to/wait-for-interactive-agents.md
+      - Persist Sessions Across Reboots: how-to/persist-sessions-across-reboots.md
       - Tutorial: tutorials/drive-a-kept-alive-agent-session.md
   - Concepts:
       - File-Backed Agent State: explanation/file-backed-agent-state.md
