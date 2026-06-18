@@ -19,6 +19,17 @@ uv tool install tmux-pilot
 
 **Requirements:** Python 3.10+, tmux. Optional: fzf (for `tp jump` picker).
 
+### Claude Code skill
+
+To teach Claude Code to drive `tp`, install the bundled skill from this repo's plugin marketplace:
+
+```
+/plugin marketplace add cmungall/tmux-pilot
+/plugin install tmux-pilot@tmux-pilot
+```
+
+This adds the `tmux-pilot` Agent Skill that Claude invokes when you ask it to start, inspect, steer, resume, or clean up agent sessions. See [Claude Code Plugin](#claude-code-plugin) below for details and local-checkout install.
+
 ## Quick Start
 
 ```bash
