@@ -1,0 +1,15 @@
+{
+  "name": "tmux-pilot",
+  "owner": {
+    "name": "Chris Mungall"
+  },
+  "description": "Marketplace for the tmux-pilot Claude Code plugin.",
+  "plugins": [
+    {
+      "name": "tmux-pilot",
+      "source": "./plugins/tmux-pilot",
+      "description": "Orchestrate tmux sessions for AI coding agents with the tmux-pilot `tp` CLI.",
+      "category": "productivity"
+    }
+  ]
+}

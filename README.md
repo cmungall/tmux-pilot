@@ -19,6 +19,17 @@ uv tool install tmux-pilot
 
 **Requirements:** Python 3.10+, tmux. Optional: fzf (for `tp jump` picker).
 
+### Claude Code skill
+
+To teach Claude Code to drive `tp`, install the bundled skill from this repo's plugin marketplace:
+
+```
+/plugin marketplace add cmungall/tmux-pilot
+/plugin install tmux-pilot@tmux-pilot
+```
+
+This adds the `tmux-pilot` Agent Skill that Claude invokes when you ask it to start, inspect, steer, resume, or clean up agent sessions. See [Claude Code Plugin](#claude-code-plugin) below for details and local-checkout install.
+
 ## Quick Start
 
 ```bash
@@ -83,6 +94,29 @@ Detailed documentation also lives under [`docs/`](./docs/overview.md) and is org
 - explanation: [`docs/explanation/file-backed-agent-state.md`](./docs/explanation/file-backed-agent-state.md)
 - reference: [`docs/reference/agent-state.md`](./docs/reference/agent-state.md)
 - reference: [`docs/reference/session-creation.md`](./docs/reference/session-creation.md)
+
+## Claude Code Plugin
+
+This repo ships a Claude Code plugin that bundles the `tmux-pilot` [Agent Skill](https://agentskills.io/specification). The skill teaches Claude to use the `tp` CLI to start, inspect, steer, resume, refresh PR metadata for, and clean up agent sessions and git worktrees.
+
+- plugin: [`plugins/tmux-pilot`](./plugins/tmux-pilot)
+- repo marketplace: [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json)
+
+Install from GitHub:
+
+```
+/plugin marketplace add cmungall/tmux-pilot
+/plugin install tmux-pilot@tmux-pilot
+```
+
+Or from a local checkout (run from the repo root):
+
+```
+/plugin marketplace add ./
+/plugin install tmux-pilot@tmux-pilot
+```
+
+The `SKILL.md` follows the portable Agent Skills spec, so it can also be loaded directly by other skill-aware agents (e.g. Codex via `~/.agents/skills/`).
 
 ## Commands
 
