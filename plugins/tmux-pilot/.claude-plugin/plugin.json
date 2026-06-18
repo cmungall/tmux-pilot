@@ -1,0 +1,18 @@
+{
+  "name": "tmux-pilot",
+  "description": "Orchestrate tmux sessions for AI coding agents with the tmux-pilot `tp` CLI: start, inspect, steer, resume, refresh PR metadata for, and clean up sessions and git worktrees.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Chris Mungall"
+  },
+  "homepage": "https://cmungall.github.io/tmux-pilot/",
+  "repository": "https://github.com/cmungall/tmux-pilot",
+  "license": "MIT",
+  "keywords": [
+    "tmux",
+    "agents",
+    "worktrees",
+    "orchestration",
+    "claude-code"
+  ]
+}
